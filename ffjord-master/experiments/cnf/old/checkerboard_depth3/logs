@@ -1,0 +1,1586 @@
+/Users/bjzhang/Dropbox (Personal)/icml2023_project/code/ffjord-master/train_discrete_toy.py
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+import argparse
+import os
+import time
+
+import torch
+import torch.optim as optim
+
+import lib.layers as layers
+import lib.toy_data as toy_data
+import lib.utils as utils
+from lib.visualize_flow import visualize_transform
+
+from train_misc import standard_normal_logprob
+from train_misc import count_parameters
+
+SOLVERS = ["dopri5", "bdf", "rk4", "midpoint", 'adams', 'explicit_adams', 'fixed_adams']
+parser = argparse.ArgumentParser('Continuous Normalizing Flow')
+parser.add_argument(
+    '--data', choices=['swissroll', '8gaussians', 'pinwheel', 'circles', 'moons', '2spirals', 'checkerboard', 'rings'],
+    type=str, default='pinwheel'
+)
+
+parser.add_argument('--depth', help='number of coupling layers', type=int, default=10)
+parser.add_argument('--glow', type=eval, choices=[True, False], default=False)
+parser.add_argument('--nf', type=eval, choices=[True, False], default=False)
+
+parser.add_argument('--niters', type=int, default=100001)
+parser.add_argument('--batch_size', type=int, default=100)
+parser.add_argument('--test_batch_size', type=int, default=1000)
+parser.add_argument('--lr', type=float, default=1e-4)
+parser.add_argument('--weight_decay', type=float, default=0)
+
+# Track quantities
+parser.add_argument('--l1int', type=float, default=None, help="int_t ||f||_1")
+parser.add_argument('--l2int', type=float, default=None, help="int_t ||f||_2")
+parser.add_argument('--dl2int', type=float, default=None, help="int_t ||f^T df/dt||_2")
+parser.add_argument('--JFrobint', type=float, default=None, help="int_t ||df/dx||_F")
+parser.add_argument('--JdiagFrobint', type=float, default=None, help="int_t ||df_i/dx_i||_F")
+parser.add_argument('--JoffdiagFrobint', type=float, default=None, help="int_t ||df/dx - df_i/dx_i||_F")
+
+parser.add_argument('--save', type=str, default='experiments/cnf')
+parser.add_argument('--viz_freq', type=int, default=1000)
+parser.add_argument('--val_freq', type=int, default=1000)
+parser.add_argument('--log_freq', type=int, default=100)
+parser.add_argument('--gpu', type=int, default=0)
+args = parser.parse_args()
+# logger
+utils.makedirs(args.save)
+logger = utils.get_logger(logpath=os.path.join(args.save, 'logs'), filepath=os.path.abspath(__file__))
+
+logger.info(args)
+
+device = torch.device('cuda:' + str(args.gpu) if torch.cuda.is_available() else 'cpu')
+
+
+def construct_model():
+
+    if args.nf:
+        chain = []
+        for i in range(args.depth):
+            chain.append(layers.PlanarFlow(2))
+        return layers.SequentialFlow(chain)
+    else:
+        chain = []
+        for i in range(args.depth):
+            if args.glow: chain.append(layers.BruteForceLayer(2))
+            chain.append(layers.CouplingLayer(2, swap=i % 2 == 0))
+        return layers.SequentialFlow(chain)
+
+
+def get_transforms(model):
+
+    if args.nf:
+        sample_fn = None
+    else:
+
+        def sample_fn(z, logpz=None):
+            if logpz is not None:
+                return model(z, logpz, reverse=True)
+            else:
+                return model(z, reverse=True)
+
+    def density_fn(x, logpx=None):
+        if logpx is not None:
+            return model(x, logpx, reverse=False)
+        else:
+            return model(x, reverse=False)
+
+    return sample_fn, density_fn
+
+
+def compute_loss(args, model, batch_size=None):
+    if batch_size is None: batch_size = args.batch_size
+
+    # load data
+    x = toy_data.inf_train_gen(args.data, batch_size=batch_size)
+    x = torch.from_numpy(x).type(torch.float32).to(device)
+    zero = torch.zeros(x.shape[0], 1).to(x)
+
+    # transform to z
+    z, delta_logp = model(x, zero)
+
+    # compute log q(z)
+    logpz = standard_normal_logprob(z).sum(1, keepdim=True)
+
+    logpx = logpz - delta_logp
+    loss = -torch.mean(logpx)
+    return loss
+
+
+if __name__ == '__main__':
+
+    model = construct_model().to(device)
+
+    logger.info(model)
+    logger.info("Number of trainable parameters: {}".format(count_parameters(model)))
+
+    optimizer = optim.Adamax(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    time_meter = utils.RunningAverageMeter(0.98)
+    loss_meter = utils.RunningAverageMeter(0.98)
+
+    end = time.time()
+    best_loss = float('inf')
+    model.train()
+    for itr in range(1, args.niters + 1):
+        optimizer.zero_grad()
+
+        loss = compute_loss(args, model)
+        loss_meter.update(loss.item())
+
+        loss.backward()
+        optimizer.step()
+
+        time_meter.update(time.time() - end)
+
+        if itr % args.log_freq == 0:
+            log_message = (
+                'Iter {:04d} | Time {:.4f}({:.4f}) | Loss {:.6f}({:.6f})'.format(
+                    itr, time_meter.val, time_meter.avg, loss_meter.val, loss_meter.avg
+                )
+            )
+            logger.info(log_message)
+
+        if itr % args.val_freq == 0 or itr == args.niters:
+            with torch.no_grad():
+                model.eval()
+                test_loss = compute_loss(args, model, batch_size=args.test_batch_size)
+                log_message = '[TEST] Iter {:04d} | Test Loss {:.6f}'.format(itr, test_loss)
+                logger.info(log_message)
+
+                if test_loss.item() < best_loss:
+                    best_loss = test_loss.item()
+                    utils.makedirs(args.save)
+                    torch.save({
+                        'args': args,
+                        'state_dict': model.state_dict(),
+                    }, os.path.join(args.save, 'checkpt.pth'))
+                model.train()
+
+        if itr % args.viz_freq == 0:
+            with torch.no_grad():
+                model.eval()
+                p_samples = toy_data.inf_train_gen(args.data, batch_size=2000)
+
+                sample_fn, density_fn = get_transforms(model)
+
+                plt.figure(figsize=(9, 3))
+                visualize_transform(
+                    p_samples, torch.randn, standard_normal_logprob, transform=sample_fn, inverse_transform=density_fn,
+                    samples=True, npts=800, device=device
+                )
+                fig_filename = os.path.join(args.save, 'figs', '{:04d}.jpg'.format(itr))
+                utils.makedirs(os.path.dirname(fig_filename))
+                plt.savefig(fig_filename)
+                plt.close()
+                model.train()
+
+        end = time.time()
+
+    logger.info('Training has finished.')
+
+Namespace(data='pinwheel', depth=3, glow=True, nf=False, niters=100001, batch_size=100, test_batch_size=1000, lr=0.0001, weight_decay=0, l1int=None, l2int=None, dl2int=None, JFrobint=None, JdiagFrobint=None, JoffdiagFrobint=None, save='experiments/cnf/checkerboard_depth3', viz_freq=1000, val_freq=1000, log_freq=100, gpu=0)
+SequentialFlow(
+  (chain): ModuleList(
+    (0): BruteForceLayer()
+    (1): CouplingLayer(
+      (net_s_t): Sequential(
+        (0): Linear(in_features=1, out_features=64, bias=True)
+        (1): ReLU(inplace=True)
+        (2): Linear(in_features=64, out_features=64, bias=True)
+        (3): ReLU(inplace=True)
+        (4): Linear(in_features=64, out_features=2, bias=True)
+      )
+    )
+    (2): BruteForceLayer()
+    (3): CouplingLayer(
+      (net_s_t): Sequential(
+        (0): Linear(in_features=1, out_features=64, bias=True)
+        (1): ReLU(inplace=True)
+        (2): Linear(in_features=64, out_features=64, bias=True)
+        (3): ReLU(inplace=True)
+        (4): Linear(in_features=64, out_features=2, bias=True)
+      )
+    )
+    (4): BruteForceLayer()
+    (5): CouplingLayer(
+      (net_s_t): Sequential(
+        (0): Linear(in_features=1, out_features=64, bias=True)
+        (1): ReLU(inplace=True)
+        (2): Linear(in_features=64, out_features=64, bias=True)
+        (3): ReLU(inplace=True)
+        (4): Linear(in_features=64, out_features=2, bias=True)
+      )
+    )
+  )
+)
+Number of trainable parameters: 13266
+Iter 0100 | Time 0.0094(0.0102) | Loss 3.785991(3.678431)
+Iter 0200 | Time 0.0044(0.0069) | Loss 3.558187(3.651994)
+Iter 0300 | Time 0.0052(0.0054) | Loss 3.661018(3.619209)
+Iter 0400 | Time 0.0041(0.0051) | Loss 3.536866(3.598020)
+Iter 0500 | Time 0.0038(0.0042) | Loss 3.518442(3.573423)
+Iter 0600 | Time 0.0046(0.0048) | Loss 3.548289(3.558452)
+Iter 0700 | Time 0.0037(0.0048) | Loss 3.638266(3.554417)
+Iter 0800 | Time 0.0054(0.0045) | Loss 3.511034(3.540646)
+Iter 0900 | Time 0.0037(0.0042) | Loss 3.571808(3.507891)
+Iter 1000 | Time 0.0033(0.0058) | Loss 3.522877(3.499257)
+[TEST] Iter 1000 | Test Loss 3.482647
+Iter 1100 | Time 0.0034(0.0060) | Loss 3.520580(3.491309)
+Iter 1200 | Time 0.0035(0.0052) | Loss 3.483063(3.475253)
+Iter 1300 | Time 0.0040(0.0059) | Loss 3.536239(3.459674)
+Iter 1400 | Time 0.0048(0.0051) | Loss 3.348240(3.430557)
+Iter 1500 | Time 0.0040(0.0051) | Loss 3.384385(3.406891)
+Iter 1600 | Time 0.0057(0.0046) | Loss 3.297234(3.379380)
+Iter 1700 | Time 0.0040(0.0053) | Loss 3.354710(3.367997)
+Iter 1800 | Time 0.0043(0.0060) | Loss 3.264321(3.342550)
+Iter 1900 | Time 0.0056(0.0049) | Loss 3.283509(3.317825)
+Iter 2000 | Time 0.0047(0.0049) | Loss 3.281461(3.310496)
+[TEST] Iter 2000 | Test Loss 3.295194
+Iter 2100 | Time 0.0071(0.0055) | Loss 3.271872(3.266179)
+Iter 2200 | Time 0.0055(0.0050) | Loss 3.388423(3.256716)
+Iter 2300 | Time 0.0039(0.0054) | Loss 3.224947(3.235814)
+Iter 2400 | Time 0.0051(0.0061) | Loss 3.065415(3.214068)
+Iter 2500 | Time 0.0043(0.0074) | Loss 3.274656(3.193827)
+Iter 2600 | Time 0.0041(0.0049) | Loss 3.226836(3.176277)
+Iter 2700 | Time 0.0046(0.0061) | Loss 3.060510(3.159660)
+Iter 2800 | Time 0.0053(0.0046) | Loss 3.138145(3.173799)
+Iter 2900 | Time 0.0040(0.0044) | Loss 3.171360(3.155317)
+Iter 3000 | Time 0.0032(0.0050) | Loss 3.110045(3.135858)
+[TEST] Iter 3000 | Test Loss 3.116956
+Iter 3100 | Time 0.0087(0.0055) | Loss 3.092004(3.108914)
+Iter 3200 | Time 0.0042(0.0044) | Loss 3.114863(3.111340)
+Iter 3300 | Time 0.0037(0.0042) | Loss 3.116273(3.097578)
+Iter 3400 | Time 0.0035(0.0040) | Loss 3.019665(3.087862)
+Iter 3500 | Time 0.0039(0.0067) | Loss 3.110101(3.083494)
+/Users/bjzhang/Dropbox (Personal)/icml2023_project/code/ffjord-master/train_discrete_toy.py
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+import argparse
+import os
+import time
+
+import torch
+import torch.optim as optim
+
+import lib.layers as layers
+import lib.toy_data as toy_data
+import lib.utils as utils
+from lib.visualize_flow import visualize_transform
+
+from train_misc import standard_normal_logprob
+from train_misc import count_parameters
+
+SOLVERS = ["dopri5", "bdf", "rk4", "midpoint", 'adams', 'explicit_adams', 'fixed_adams']
+parser = argparse.ArgumentParser('Continuous Normalizing Flow')
+parser.add_argument(
+    '--data', choices=['swissroll', '8gaussians', 'pinwheel', 'circles', 'moons', '2spirals', 'checkerboard', 'rings'],
+    type=str, default='pinwheel'
+)
+
+parser.add_argument('--depth', help='number of coupling layers', type=int, default=10)
+parser.add_argument('--glow', type=eval, choices=[True, False], default=False)
+parser.add_argument('--nf', type=eval, choices=[True, False], default=False)
+
+parser.add_argument('--niters', type=int, default=100001)
+parser.add_argument('--batch_size', type=int, default=100)
+parser.add_argument('--test_batch_size', type=int, default=1000)
+parser.add_argument('--lr', type=float, default=1e-4)
+parser.add_argument('--weight_decay', type=float, default=0)
+
+# Track quantities
+parser.add_argument('--l1int', type=float, default=None, help="int_t ||f||_1")
+parser.add_argument('--l2int', type=float, default=None, help="int_t ||f||_2")
+parser.add_argument('--dl2int', type=float, default=None, help="int_t ||f^T df/dt||_2")
+parser.add_argument('--JFrobint', type=float, default=None, help="int_t ||df/dx||_F")
+parser.add_argument('--JdiagFrobint', type=float, default=None, help="int_t ||df_i/dx_i||_F")
+parser.add_argument('--JoffdiagFrobint', type=float, default=None, help="int_t ||df/dx - df_i/dx_i||_F")
+
+parser.add_argument('--save', type=str, default='experiments/cnf')
+parser.add_argument('--viz_freq', type=int, default=1000)
+parser.add_argument('--val_freq', type=int, default=1000)
+parser.add_argument('--log_freq', type=int, default=100)
+parser.add_argument('--gpu', type=int, default=0)
+args = parser.parse_args()
+# logger
+utils.makedirs(args.save)
+logger = utils.get_logger(logpath=os.path.join(args.save, 'logs'), filepath=os.path.abspath(__file__))
+
+logger.info(args)
+
+device = torch.device('cuda:' + str(args.gpu) if torch.cuda.is_available() else 'cpu')
+
+
+def construct_model():
+
+    if args.nf:
+        chain = []
+        for i in range(args.depth):
+            chain.append(layers.PlanarFlow(2))
+        return layers.SequentialFlow(chain)
+    else:
+        chain = []
+        for i in range(args.depth):
+            if args.glow: chain.append(layers.BruteForceLayer(2))
+            chain.append(layers.CouplingLayer(2, swap=i % 2 == 0))
+        return layers.SequentialFlow(chain)
+
+
+def get_transforms(model):
+
+    if args.nf:
+        sample_fn = None
+    else:
+
+        def sample_fn(z, logpz=None):
+            if logpz is not None:
+                return model(z, logpz, reverse=True)
+            else:
+                return model(z, reverse=True)
+
+    def density_fn(x, logpx=None):
+        if logpx is not None:
+            return model(x, logpx, reverse=False)
+        else:
+            return model(x, reverse=False)
+
+    return sample_fn, density_fn
+
+
+def compute_loss(args, model, batch_size=None):
+    if batch_size is None: batch_size = args.batch_size
+
+    # load data
+    x = toy_data.inf_train_gen(args.data, batch_size=batch_size)
+    x = torch.from_numpy(x).type(torch.float32).to(device)
+    zero = torch.zeros(x.shape[0], 1).to(x)
+
+    # transform to z
+    z, delta_logp = model(x, zero)
+
+    # compute log q(z)
+    logpz = standard_normal_logprob(z).sum(1, keepdim=True)
+
+    logpx = logpz - delta_logp
+    loss = -torch.mean(logpx)
+    return loss
+
+
+if __name__ == '__main__':
+
+    model = construct_model().to(device)
+
+    logger.info(model)
+    logger.info("Number of trainable parameters: {}".format(count_parameters(model)))
+
+    optimizer = optim.Adamax(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    time_meter = utils.RunningAverageMeter(0.98)
+    loss_meter = utils.RunningAverageMeter(0.98)
+
+    end = time.time()
+    best_loss = float('inf')
+    model.train()
+    for itr in range(1, args.niters + 1):
+        optimizer.zero_grad()
+
+        loss = compute_loss(args, model)
+        loss_meter.update(loss.item())
+
+        loss.backward()
+        optimizer.step()
+
+        time_meter.update(time.time() - end)
+
+        if itr % args.log_freq == 0:
+            log_message = (
+                'Iter {:04d} | Time {:.4f}({:.4f}) | Loss {:.6f}({:.6f})'.format(
+                    itr, time_meter.val, time_meter.avg, loss_meter.val, loss_meter.avg
+                )
+            )
+            logger.info(log_message)
+
+        if itr % args.val_freq == 0 or itr == args.niters:
+            with torch.no_grad():
+                model.eval()
+                test_loss = compute_loss(args, model, batch_size=args.test_batch_size)
+                log_message = '[TEST] Iter {:04d} | Test Loss {:.6f}'.format(itr, test_loss)
+                logger.info(log_message)
+
+                if test_loss.item() < best_loss:
+                    best_loss = test_loss.item()
+                    utils.makedirs(args.save)
+                    torch.save({
+                        'args': args,
+                        'state_dict': model.state_dict(),
+                    }, os.path.join(args.save, 'checkpt.pth'))
+                model.train()
+
+        if itr % args.viz_freq == 0:
+            with torch.no_grad():
+                model.eval()
+                p_samples = toy_data.inf_train_gen(args.data, batch_size=2000)
+
+                sample_fn, density_fn = get_transforms(model)
+
+                plt.figure(figsize=(9, 3))
+                visualize_transform(
+                    p_samples, torch.randn, standard_normal_logprob, transform=sample_fn, inverse_transform=density_fn,
+                    samples=True, npts=800, device=device
+                )
+                fig_filename = os.path.join(args.save, 'figs', '{:04d}.jpg'.format(itr))
+                utils.makedirs(os.path.dirname(fig_filename))
+                plt.savefig(fig_filename)
+                plt.close()
+                model.train()
+
+        end = time.time()
+
+    logger.info('Training has finished.')
+
+Namespace(data='checkerboard', depth=3, glow=True, nf=False, niters=100001, batch_size=100, test_batch_size=1000, lr=0.0001, weight_decay=0, l1int=None, l2int=None, dl2int=None, JFrobint=None, JdiagFrobint=None, JoffdiagFrobint=None, save='experiments/cnf/checkerboard_depth3', viz_freq=1000, val_freq=1000, log_freq=100, gpu=0)
+SequentialFlow(
+  (chain): ModuleList(
+    (0): BruteForceLayer()
+    (1): CouplingLayer(
+      (net_s_t): Sequential(
+        (0): Linear(in_features=1, out_features=64, bias=True)
+        (1): ReLU(inplace=True)
+        (2): Linear(in_features=64, out_features=64, bias=True)
+        (3): ReLU(inplace=True)
+        (4): Linear(in_features=64, out_features=2, bias=True)
+      )
+    )
+    (2): BruteForceLayer()
+    (3): CouplingLayer(
+      (net_s_t): Sequential(
+        (0): Linear(in_features=1, out_features=64, bias=True)
+        (1): ReLU(inplace=True)
+        (2): Linear(in_features=64, out_features=64, bias=True)
+        (3): ReLU(inplace=True)
+        (4): Linear(in_features=64, out_features=2, bias=True)
+      )
+    )
+    (4): BruteForceLayer()
+    (5): CouplingLayer(
+      (net_s_t): Sequential(
+        (0): Linear(in_features=1, out_features=64, bias=True)
+        (1): ReLU(inplace=True)
+        (2): Linear(in_features=64, out_features=64, bias=True)
+        (3): ReLU(inplace=True)
+        (4): Linear(in_features=64, out_features=2, bias=True)
+      )
+    )
+  )
+)
+Number of trainable parameters: 13266
+Iter 0100 | Time 0.0045(0.0069) | Loss 5.199960(5.402955)
+Iter 0200 | Time 0.0035(0.0044) | Loss 4.802191(5.099124)
+Iter 0300 | Time 0.0050(0.0042) | Loss 5.031963(4.913421)
+Iter 0400 | Time 0.0045(0.0051) | Loss 4.817640(4.765188)
+Iter 0500 | Time 0.0048(0.0052) | Loss 4.703880(4.667296)
+Iter 0600 | Time 0.0035(0.0083) | Loss 4.643470(4.593799)
+Iter 0700 | Time 0.0041(0.0050) | Loss 4.469514(4.542080)
+Iter 0800 | Time 0.0065(0.0043) | Loss 4.519804(4.515894)
+Iter 0900 | Time 0.0042(0.0043) | Loss 4.441456(4.498274)
+Iter 1000 | Time 0.0031(0.0047) | Loss 4.453623(4.476102)
+[TEST] Iter 1000 | Test Loss 4.435290
+Iter 1100 | Time 0.0032(0.0047) | Loss 4.502667(4.455116)
+Iter 1200 | Time 0.0045(0.0043) | Loss 4.453628(4.445154)
+Iter 1300 | Time 0.0072(0.0058) | Loss 4.516639(4.446932)
+Iter 1400 | Time 0.0167(0.0049) | Loss 4.421402(4.429903)
+Iter 1500 | Time 0.0034(0.0048) | Loss 4.250896(4.407637)
+Iter 1600 | Time 0.0033(0.0042) | Loss 4.486223(4.413676)
+Iter 1700 | Time 0.0037(0.0044) | Loss 4.454733(4.385000)
+Iter 1800 | Time 0.0042(0.0042) | Loss 4.298528(4.349088)
+Iter 1900 | Time 0.0034(0.0042) | Loss 4.342536(4.333820)
+Iter 2000 | Time 0.0058(0.0044) | Loss 4.285323(4.301222)
+[TEST] Iter 2000 | Test Loss 4.278498
+Iter 2100 | Time 0.0034(0.0046) | Loss 4.194408(4.269375)
+Iter 2200 | Time 0.0033(0.0053) | Loss 4.250195(4.240874)
+Iter 2300 | Time 0.0040(0.0046) | Loss 4.172716(4.219150)
+Iter 2400 | Time 0.0030(0.0051) | Loss 4.188757(4.198799)
+Iter 2500 | Time 0.0046(0.0046) | Loss 4.200272(4.173409)
+Iter 2600 | Time 0.0033(0.0042) | Loss 4.173528(4.161726)
+Iter 2700 | Time 0.0051(0.0042) | Loss 4.094862(4.140356)
+Iter 2800 | Time 0.0061(0.0044) | Loss 4.170018(4.124583)
+Iter 2900 | Time 0.0042(0.0042) | Loss 4.175831(4.122413)
+Iter 3000 | Time 0.0043(0.0044) | Loss 4.077191(4.112873)
+[TEST] Iter 3000 | Test Loss 4.089194
+Iter 3100 | Time 0.0051(0.0079) | Loss 4.041479(4.096566)
+Iter 3200 | Time 0.0043(0.0078) | Loss 4.263909(4.102920)
+Iter 3300 | Time 0.0118(0.0081) | Loss 4.052480(4.095418)
+Iter 3400 | Time 0.0073(0.0061) | Loss 4.085110(4.082807)
+Iter 3500 | Time 0.0038(0.0049) | Loss 4.078452(4.081291)
+Iter 3600 | Time 0.0057(0.0051) | Loss 4.169682(4.067050)
+Iter 3700 | Time 0.0033(0.0043) | Loss 3.950603(4.069900)
+Iter 3800 | Time 0.0036(0.0046) | Loss 4.167921(4.073241)
+Iter 3900 | Time 0.0045(0.0045) | Loss 4.090046(4.071525)
+Iter 4000 | Time 0.0094(0.0046) | Loss 4.129105(4.066575)
+[TEST] Iter 4000 | Test Loss 4.099062
+Iter 4100 | Time 0.0041(0.0064) | Loss 4.149688(4.076419)
+Iter 4200 | Time 0.0044(0.0067) | Loss 4.074903(4.075699)
+Iter 4300 | Time 0.0036(0.0051) | Loss 4.056790(4.062850)
+Iter 4400 | Time 0.0037(0.0053) | Loss 4.085657(4.062231)
+Iter 4500 | Time 0.0044(0.0044) | Loss 3.995487(4.049838)
+Iter 4600 | Time 0.0031(0.0048) | Loss 4.077948(4.052820)
+Iter 4700 | Time 0.0036(0.0045) | Loss 4.036565(4.052612)
+Iter 4800 | Time 0.0051(0.0043) | Loss 4.083942(4.044428)
+Iter 4900 | Time 0.0059(0.0043) | Loss 4.078157(4.045063)
+Iter 5000 | Time 0.0045(0.0047) | Loss 4.006268(4.043751)
+[TEST] Iter 5000 | Test Loss 4.056618
+Iter 5100 | Time 0.0050(0.0063) | Loss 3.958234(4.048106)
+Iter 5200 | Time 0.0055(0.0049) | Loss 4.082891(4.046125)
+Iter 5300 | Time 0.0040(0.0054) | Loss 4.100664(4.042677)
+Iter 5400 | Time 0.0039(0.0044) | Loss 4.066780(4.041024)
+Iter 5500 | Time 0.0035(0.0042) | Loss 3.953664(4.039296)
+Iter 5600 | Time 0.0036(0.0042) | Loss 4.004049(4.034920)
+Iter 5700 | Time 0.0049(0.0045) | Loss 4.056805(4.043790)
+Iter 5800 | Time 0.0047(0.0049) | Loss 4.084583(4.029783)
+Iter 5900 | Time 0.0046(0.0049) | Loss 4.010906(4.026115)
+Iter 6000 | Time 0.0039(0.0043) | Loss 4.004990(4.023712)
+[TEST] Iter 6000 | Test Loss 4.019218
+Iter 6100 | Time 0.0101(0.0055) | Loss 4.074008(4.032777)
+Iter 6200 | Time 0.0045(0.0051) | Loss 4.058099(4.022577)
+Iter 6300 | Time 0.0055(0.0051) | Loss 4.017422(4.020266)
+Iter 6400 | Time 0.0038(0.0047) | Loss 4.093204(4.020506)
+Iter 6500 | Time 0.0053(0.0050) | Loss 4.012369(4.015065)
+Iter 6600 | Time 0.0047(0.0056) | Loss 4.148740(4.029557)
+Iter 6700 | Time 0.0035(0.0050) | Loss 4.052744(4.025629)
+Iter 6800 | Time 0.0059(0.0056) | Loss 4.049575(4.025627)
+Iter 6900 | Time 0.0050(0.0075) | Loss 4.014301(4.020226)
+Iter 7000 | Time 0.0050(0.0054) | Loss 4.031851(4.007671)
+[TEST] Iter 7000 | Test Loss 4.008645
+Iter 7100 | Time 0.0067(0.0069) | Loss 4.044031(4.007717)
+Iter 7200 | Time 0.0047(0.0062) | Loss 4.021825(4.010909)
+Iter 7300 | Time 0.0067(0.0055) | Loss 4.036519(4.011438)
+Iter 7400 | Time 0.0044(0.0047) | Loss 4.083459(4.015662)
+Iter 7500 | Time 0.0062(0.0065) | Loss 4.030136(4.003268)
+Iter 7600 | Time 0.0035(0.0057) | Loss 4.080107(4.008058)
+Iter 7700 | Time 0.0043(0.0062) | Loss 4.006792(4.001952)
+Iter 7800 | Time 0.0061(0.0072) | Loss 4.036150(4.001110)
+Iter 7900 | Time 0.0056(0.0057) | Loss 3.951716(4.000205)
+Iter 8000 | Time 0.0053(0.0069) | Loss 4.046414(3.997696)
+[TEST] Iter 8000 | Test Loss 4.023220
+Iter 8100 | Time 0.0049(0.0056) | Loss 3.999045(3.999858)
+Iter 8200 | Time 0.0040(0.0049) | Loss 4.056065(4.005210)
+Iter 8300 | Time 0.0036(0.0047) | Loss 4.004678(3.995025)
+Iter 8400 | Time 0.0045(0.0054) | Loss 3.951508(3.992144)
+Iter 8500 | Time 0.0033(0.0052) | Loss 3.895871(3.995933)
+Iter 8600 | Time 0.0045(0.0043) | Loss 3.976873(3.997359)
+Iter 8700 | Time 0.0033(0.0044) | Loss 3.901899(3.987132)
+Iter 8800 | Time 0.0038(0.0042) | Loss 3.957902(3.989182)
+Iter 8900 | Time 0.0037(0.0041) | Loss 3.962549(3.993709)
+Iter 9000 | Time 0.0040(0.0046) | Loss 3.943881(3.992964)
+[TEST] Iter 9000 | Test Loss 3.983684
+Iter 9100 | Time 0.0035(0.0073) | Loss 4.032605(3.998326)
+Iter 9200 | Time 0.0109(0.0085) | Loss 4.009389(3.985015)
+Iter 9300 | Time 0.0047(0.0072) | Loss 3.928432(3.984779)
+Iter 9400 | Time 0.0040(0.0082) | Loss 4.116539(3.985991)
+Iter 9500 | Time 0.0052(0.0060) | Loss 4.002191(3.988788)
+Iter 9600 | Time 0.0062(0.0069) | Loss 3.962245(3.988650)
+Iter 9700 | Time 0.0060(0.0058) | Loss 3.967974(3.982294)
+Iter 9800 | Time 0.0284(0.0054) | Loss 4.024912(3.992812)
+Iter 9900 | Time 0.0046(0.0072) | Loss 3.976750(3.980602)
+Iter 10000 | Time 0.0056(0.0050) | Loss 3.885547(3.974454)
+[TEST] Iter 10000 | Test Loss 4.012298
+Iter 10100 | Time 0.0041(0.0044) | Loss 3.984644(3.976440)
+Iter 10200 | Time 0.0037(0.0066) | Loss 4.024492(3.985604)
+Iter 10300 | Time 0.0032(0.0055) | Loss 3.994142(3.973692)
+Iter 10400 | Time 0.0040(0.0061) | Loss 3.941231(3.970932)
+Iter 10500 | Time 0.0107(0.0064) | Loss 4.004926(3.978786)
+Iter 10600 | Time 0.0032(0.0053) | Loss 4.009593(3.977864)
+Iter 10700 | Time 0.0042(0.0063) | Loss 4.033948(3.973403)
+Iter 10800 | Time 0.0049(0.0066) | Loss 3.978066(3.977976)
+Iter 10900 | Time 0.0045(0.0058) | Loss 3.986089(3.973565)
+Iter 11000 | Time 0.0032(0.0050) | Loss 3.979549(3.977540)
+[TEST] Iter 11000 | Test Loss 3.947142
+Iter 11100 | Time 0.0064(0.0062) | Loss 3.954705(3.974556)
+Iter 11200 | Time 0.0041(0.0073) | Loss 3.931884(3.983047)
+Iter 11300 | Time 0.0086(0.0066) | Loss 3.946309(3.970063)
+Iter 11400 | Time 0.0211(0.0090) | Loss 4.015463(3.973711)
+Iter 11500 | Time 0.0065(0.0064) | Loss 3.951174(3.971504)
+Iter 11600 | Time 0.0070(0.0083) | Loss 3.951795(3.966857)
+Iter 11700 | Time 0.0105(0.0054) | Loss 4.027005(3.972861)
+Iter 11800 | Time 0.0060(0.0076) | Loss 3.991388(3.968807)
+Iter 11900 | Time 0.0031(0.0049) | Loss 3.983656(3.971959)
+Iter 12000 | Time 0.0043(0.0044) | Loss 3.953776(3.961579)
+[TEST] Iter 12000 | Test Loss 3.966094
+Iter 12100 | Time 0.0047(0.0141) | Loss 3.984467(3.968388)
+Iter 12200 | Time 0.0089(0.0062) | Loss 4.053633(3.968492)
+Iter 12300 | Time 0.0051(0.0066) | Loss 3.936634(3.964433)
+Iter 12400 | Time 0.0035(0.0067) | Loss 3.978177(3.969068)
+Iter 12500 | Time 0.0037(0.0076) | Loss 3.987250(3.952626)
+Iter 12600 | Time 0.0054(0.0051) | Loss 3.989612(3.958645)
+Iter 12700 | Time 0.0076(0.0046) | Loss 3.940106(3.953987)
+Iter 12800 | Time 0.0089(0.0049) | Loss 4.021091(3.966064)
+Iter 12900 | Time 0.0097(0.0078) | Loss 3.889438(3.949997)
+Iter 13000 | Time 0.0068(0.0063) | Loss 3.938811(3.964155)
+[TEST] Iter 13000 | Test Loss 3.950121
+Iter 13100 | Time 0.0042(0.0081) | Loss 3.880240(3.951176)
+Iter 13200 | Time 0.0042(0.0087) | Loss 4.041315(3.959110)
+Iter 13300 | Time 0.0055(0.0056) | Loss 3.931634(3.955690)
+Iter 13400 | Time 0.0030(0.0049) | Loss 3.917383(3.954570)
+Iter 13500 | Time 0.0055(0.0051) | Loss 3.978363(3.954705)
+Iter 13600 | Time 0.0037(0.0067) | Loss 4.023436(3.953529)
+Iter 13700 | Time 0.0035(0.0048) | Loss 3.995030(3.955691)
+Iter 13800 | Time 0.0040(0.0044) | Loss 3.913111(3.952774)
+Iter 13900 | Time 0.0042(0.0054) | Loss 4.011455(3.957096)
+Iter 14000 | Time 0.0057(0.0047) | Loss 4.016581(3.963309)
+[TEST] Iter 14000 | Test Loss 3.949622
+Iter 14100 | Time 0.0050(0.0064) | Loss 3.997951(3.952097)
+Iter 14200 | Time 0.0040(0.0071) | Loss 4.022760(3.951337)
+Iter 14300 | Time 0.0039(0.0053) | Loss 3.967649(3.946644)
+Iter 14400 | Time 0.0038(0.0065) | Loss 3.956949(3.950751)
+Iter 14500 | Time 0.0039(0.0072) | Loss 3.974540(3.946165)
+Iter 14600 | Time 0.0105(0.0064) | Loss 3.936021(3.943946)
+Iter 14700 | Time 0.0210(0.0063) | Loss 3.967531(3.946212)
+Iter 14800 | Time 0.0179(0.0070) | Loss 3.881422(3.947058)
+Iter 14900 | Time 0.0065(0.0059) | Loss 3.927744(3.942796)
+Iter 15000 | Time 0.0052(0.0061) | Loss 3.927520(3.949621)
+[TEST] Iter 15000 | Test Loss 3.958333
+Iter 15100 | Time 0.0039(0.0062) | Loss 3.982070(3.952654)
+Iter 15200 | Time 0.0065(0.0067) | Loss 3.907171(3.949609)
+Iter 15300 | Time 0.0033(0.0067) | Loss 3.916946(3.948421)
+Iter 15400 | Time 0.0041(0.0067) | Loss 3.979414(3.950590)
+Iter 15500 | Time 0.0045(0.0052) | Loss 3.947145(3.938365)
+Iter 15600 | Time 0.0038(0.0052) | Loss 3.962774(3.946141)
+Iter 15700 | Time 0.0043(0.0064) | Loss 3.892905(3.950021)
+Iter 15800 | Time 0.0115(0.0060) | Loss 3.990037(3.940237)
+Iter 15900 | Time 0.0043(0.0069) | Loss 4.042093(3.944051)
+Iter 16000 | Time 0.0064(0.0049) | Loss 3.925439(3.939456)
+[TEST] Iter 16000 | Test Loss 3.946014
+Iter 16100 | Time 0.0052(0.0055) | Loss 3.968627(3.945485)
+Iter 16200 | Time 0.0034(0.0050) | Loss 3.963696(3.941077)
+Iter 16300 | Time 0.0036(0.0054) | Loss 3.953572(3.941591)
+Iter 16400 | Time 0.0053(0.0051) | Loss 3.971768(3.942005)
+Iter 16500 | Time 0.0043(0.0053) | Loss 3.992600(3.945101)
+Iter 16600 | Time 0.0048(0.0049) | Loss 4.023173(3.942201)
+Iter 16700 | Time 0.0040(0.0059) | Loss 3.929854(3.950239)
+Iter 16800 | Time 0.0066(0.0061) | Loss 3.916457(3.939671)
+Iter 16900 | Time 0.0036(0.0049) | Loss 4.008989(3.953620)
+Iter 17000 | Time 0.0043(0.0046) | Loss 3.995396(3.938514)
+[TEST] Iter 17000 | Test Loss 3.921850
+Iter 17100 | Time 0.0055(0.0061) | Loss 3.885393(3.934317)
+Iter 17200 | Time 0.0062(0.0064) | Loss 3.902638(3.936065)
+Iter 17300 | Time 0.0066(0.0055) | Loss 3.876831(3.939485)
+Iter 17400 | Time 0.0097(0.0058) | Loss 3.946759(3.936190)
+Iter 17500 | Time 0.0157(0.0093) | Loss 4.051201(3.932084)
+Iter 17600 | Time 0.0057(0.0061) | Loss 3.981844(3.939128)
+Iter 17700 | Time 0.0031(0.0076) | Loss 3.964683(3.943872)
+Iter 17800 | Time 0.0045(0.0053) | Loss 3.975211(3.936217)
+Iter 17900 | Time 0.0042(0.0065) | Loss 3.944607(3.932848)
+Iter 18000 | Time 0.0059(0.0058) | Loss 3.980531(3.931736)
+[TEST] Iter 18000 | Test Loss 3.953907
+Iter 18100 | Time 0.0059(0.0070) | Loss 3.917278(3.928287)
+Iter 18200 | Time 0.0044(0.0068) | Loss 3.952303(3.927053)
+Iter 18300 | Time 0.0042(0.0066) | Loss 3.884219(3.925797)
+Iter 18400 | Time 0.0046(0.0086) | Loss 3.864972(3.934377)
+Iter 18500 | Time 0.0047(0.0059) | Loss 3.963222(3.939464)
+Iter 18600 | Time 0.0137(0.0057) | Loss 4.028966(3.935159)
+Iter 18700 | Time 0.0054(0.0047) | Loss 3.974943(3.937489)
+Iter 18800 | Time 0.0041(0.0055) | Loss 4.001584(3.924872)
+Iter 18900 | Time 0.0043(0.0046) | Loss 3.945841(3.926038)
+Iter 19000 | Time 0.0089(0.0178) | Loss 3.838063(3.926359)
+[TEST] Iter 19000 | Test Loss 3.948196
+Iter 19100 | Time 0.0036(0.0096) | Loss 3.986285(3.932617)
+Iter 19200 | Time 0.0036(0.0071) | Loss 3.872669(3.923782)
+Iter 19300 | Time 0.0057(0.0108) | Loss 3.879397(3.930440)
+Iter 19400 | Time 0.0100(0.0068) | Loss 4.042400(3.926056)
+Iter 19500 | Time 0.0059(0.0056) | Loss 3.872910(3.941824)
+Iter 19600 | Time 0.0032(0.0052) | Loss 3.881541(3.928074)
+Iter 19700 | Time 0.0037(0.0053) | Loss 3.953592(3.923362)
+Iter 19800 | Time 0.0103(0.0288) | Loss 4.010027(3.933237)
+Iter 19900 | Time 0.0082(0.0107) | Loss 3.912893(3.929224)
+Iter 20000 | Time 0.0094(0.0075) | Loss 3.891531(3.922629)
+[TEST] Iter 20000 | Test Loss 3.926226
+Iter 20100 | Time 0.0071(0.0066) | Loss 3.930578(3.922033)
+Iter 20200 | Time 0.0053(0.0078) | Loss 3.910702(3.924067)
+Iter 20300 | Time 0.0057(0.0074) | Loss 3.938952(3.933446)
+Iter 20400 | Time 0.0059(0.0059) | Loss 3.937976(3.924183)
+Iter 20500 | Time 0.0046(0.0060) | Loss 3.965136(3.931194)
+Iter 20600 | Time 0.0039(0.0045) | Loss 3.913862(3.924080)
+Iter 20700 | Time 0.0032(0.0051) | Loss 3.953568(3.929266)
+Iter 20800 | Time 0.0045(0.0052) | Loss 3.955787(3.926666)
+Iter 20900 | Time 0.0043(0.0045) | Loss 3.994138(3.918149)
+Iter 21000 | Time 0.0029(0.0044) | Loss 3.877378(3.922654)
+[TEST] Iter 21000 | Test Loss 3.923906
+Iter 21100 | Time 0.0084(0.0056) | Loss 3.916728(3.923087)
+Iter 21200 | Time 0.0224(0.0054) | Loss 3.918525(3.924089)
+Iter 21300 | Time 0.0067(0.0052) | Loss 3.982212(3.913761)
+Iter 21400 | Time 0.0036(0.0056) | Loss 3.918721(3.919968)
+Iter 21500 | Time 0.0071(0.0057) | Loss 3.907306(3.919091)
+Iter 21600 | Time 0.0035(0.0047) | Loss 3.991102(3.916592)
+Iter 21700 | Time 0.0047(0.0055) | Loss 3.913745(3.916319)
+Iter 21800 | Time 0.0038(0.0046) | Loss 3.911195(3.920498)
+Iter 21900 | Time 0.0051(0.0050) | Loss 3.987263(3.913171)
+Iter 22000 | Time 0.0044(0.0048) | Loss 3.965926(3.914222)
+[TEST] Iter 22000 | Test Loss 3.906912
+Iter 22100 | Time 0.0492(0.0177) | Loss 3.818968(3.913775)
+Iter 22200 | Time 0.0071(0.0073) | Loss 3.934559(3.919903)
+Iter 22300 | Time 0.0029(0.0049) | Loss 3.943403(3.918530)
+Iter 22400 | Time 0.0042(0.0048) | Loss 3.911685(3.919219)
+Iter 22500 | Time 0.0044(0.0070) | Loss 3.831060(3.920759)
+Iter 22600 | Time 0.0045(0.0136) | Loss 3.921885(3.921603)
+Iter 22700 | Time 0.0058(0.0064) | Loss 3.822626(3.914946)
+Iter 22800 | Time 0.0881(0.0104) | Loss 3.852189(3.916659)
+Iter 22900 | Time 0.0034(0.0075) | Loss 3.942437(3.918109)
+Iter 23000 | Time 0.0035(0.0055) | Loss 3.945349(3.909338)
+[TEST] Iter 23000 | Test Loss 3.930363
+Iter 23100 | Time 0.0185(0.0073) | Loss 3.885192(3.911350)
+Iter 23200 | Time 0.0033(0.0064) | Loss 3.895119(3.913664)
+Iter 23300 | Time 0.0038(0.0053) | Loss 3.962690(3.915699)
+Iter 23400 | Time 0.0047(0.0047) | Loss 3.905694(3.927834)
+Iter 23500 | Time 0.0057(0.0053) | Loss 4.079130(3.914686)
+Iter 23600 | Time 0.0481(0.0091) | Loss 3.993301(3.920624)
+Iter 23700 | Time 0.0044(0.0054) | Loss 3.932591(3.921093)
+Iter 23800 | Time 0.0039(0.0071) | Loss 3.942937(3.914033)
+Iter 23900 | Time 0.0036(0.0068) | Loss 3.991972(3.915044)
+Iter 24000 | Time 0.0087(0.0050) | Loss 3.887444(3.902673)
+[TEST] Iter 24000 | Test Loss 3.913955
+Iter 24100 | Time 0.0041(0.0064) | Loss 4.000901(3.919186)
+Iter 24200 | Time 0.0078(0.0066) | Loss 3.951005(3.920635)
+Iter 24300 | Time 0.0046(0.0064) | Loss 3.885716(3.920887)
+Iter 24400 | Time 0.0063(0.0059) | Loss 3.846349(3.910107)
+Iter 24500 | Time 0.0032(0.0047) | Loss 4.046221(3.915987)
+Iter 24600 | Time 0.0068(0.0051) | Loss 3.986697(3.912861)
+Iter 24700 | Time 0.0048(0.0063) | Loss 3.877115(3.911918)
+Iter 24800 | Time 0.0064(0.0047) | Loss 3.940180(3.899686)
+Iter 24900 | Time 0.0041(0.0088) | Loss 3.892301(3.908053)
+Iter 25000 | Time 0.0047(0.0055) | Loss 3.888631(3.914012)
+[TEST] Iter 25000 | Test Loss 3.929641
+Iter 25100 | Time 0.0050(0.0057) | Loss 3.839629(3.904666)
+Iter 25200 | Time 0.0052(0.0051) | Loss 3.887632(3.911846)
+Iter 25300 | Time 0.0062(0.0061) | Loss 3.970641(3.908997)
+Iter 25400 | Time 0.0039(0.0059) | Loss 3.912534(3.902585)
+Iter 25500 | Time 0.0037(0.0049) | Loss 3.899899(3.905939)
+Iter 25600 | Time 0.0041(0.0051) | Loss 3.864127(3.912980)
+Iter 25700 | Time 0.0037(0.0045) | Loss 3.898469(3.903783)
+Iter 25800 | Time 0.0037(0.0046) | Loss 3.895171(3.917655)
+Iter 25900 | Time 0.0067(0.0049) | Loss 3.869027(3.902642)
+Iter 26000 | Time 0.0057(0.0053) | Loss 3.901110(3.903832)
+[TEST] Iter 26000 | Test Loss 3.921713
+Iter 26100 | Time 0.0045(0.0065) | Loss 3.881387(3.904047)
+Iter 26200 | Time 0.0038(0.0075) | Loss 3.828132(3.899220)
+Iter 26300 | Time 0.0039(0.0052) | Loss 3.986948(3.905945)
+Iter 26400 | Time 0.0097(0.0063) | Loss 3.958153(3.903575)
+Iter 26500 | Time 0.0039(0.0065) | Loss 3.840091(3.894555)
+Iter 26600 | Time 0.0065(0.0054) | Loss 3.918922(3.907237)
+Iter 26700 | Time 0.0049(0.0051) | Loss 3.838836(3.905612)
+Iter 26800 | Time 0.0073(0.0047) | Loss 3.900403(3.913410)
+Iter 26900 | Time 0.0042(0.0058) | Loss 3.961981(3.911507)
+Iter 27000 | Time 0.0034(0.0069) | Loss 3.955019(3.907443)
+[TEST] Iter 27000 | Test Loss 3.884798
+Iter 27100 | Time 0.0037(0.0069) | Loss 3.899091(3.902668)
+Iter 27200 | Time 0.0043(0.0054) | Loss 3.944640(3.908321)
+Iter 27300 | Time 0.0127(0.0071) | Loss 3.967032(3.902326)
+Iter 27400 | Time 0.0037(0.0054) | Loss 3.961712(3.898681)
+Iter 27500 | Time 0.0046(0.0056) | Loss 3.951761(3.897984)
+Iter 27600 | Time 0.0207(0.0096) | Loss 3.900746(3.907403)
+Iter 27700 | Time 0.0046(0.0063) | Loss 3.872047(3.897096)
+Iter 27800 | Time 0.0051(0.0056) | Loss 3.896019(3.907479)
+Iter 27900 | Time 0.0097(0.0063) | Loss 3.914169(3.898912)
+Iter 28000 | Time 0.0047(0.0053) | Loss 3.964619(3.905081)
+[TEST] Iter 28000 | Test Loss 3.898905
+Iter 28100 | Time 0.0036(0.0065) | Loss 3.887690(3.900847)
+Iter 28200 | Time 0.0047(0.0054) | Loss 3.941433(3.896160)
+Iter 28300 | Time 0.0036(0.0055) | Loss 3.986653(3.899134)
+Iter 28400 | Time 0.0048(0.0062) | Loss 3.876729(3.898844)
+Iter 28500 | Time 0.0055(0.0063) | Loss 3.888898(3.893472)
+Iter 28600 | Time 0.0044(0.0059) | Loss 3.924651(3.903055)
+Iter 28700 | Time 0.0062(0.0052) | Loss 3.917166(3.900194)
+Iter 28800 | Time 0.0039(0.0053) | Loss 3.870527(3.903540)
+Iter 28900 | Time 0.0033(0.0051) | Loss 3.870908(3.900403)
+Iter 29000 | Time 0.0049(0.0063) | Loss 3.877547(3.891983)
+[TEST] Iter 29000 | Test Loss 3.918783
+Iter 29100 | Time 0.0065(0.0104) | Loss 3.820820(3.889407)
+Iter 29200 | Time 0.0042(0.0082) | Loss 3.974298(3.905107)
+Iter 29300 | Time 0.0045(0.0054) | Loss 3.805737(3.899138)
+Iter 29400 | Time 0.0053(0.0053) | Loss 3.814323(3.893396)
+Iter 29500 | Time 0.0040(0.0057) | Loss 3.793588(3.889402)
+Iter 29600 | Time 0.0036(0.0053) | Loss 3.927652(3.887948)
+Iter 29700 | Time 0.0040(0.0045) | Loss 3.861708(3.896688)
+Iter 29800 | Time 0.0058(0.0048) | Loss 3.870061(3.895339)
+Iter 29900 | Time 0.0050(0.0046) | Loss 3.849736(3.897635)
+Iter 30000 | Time 0.0081(0.0050) | Loss 3.783950(3.901347)
+[TEST] Iter 30000 | Test Loss 3.905420
+Iter 30100 | Time 0.0077(0.0110) | Loss 3.936566(3.888768)
+Iter 30200 | Time 0.0054(0.0078) | Loss 3.930198(3.904561)
+Iter 30300 | Time 0.0109(0.0072) | Loss 3.805228(3.894536)
+Iter 30400 | Time 0.0042(0.0064) | Loss 3.917315(3.888868)
+Iter 30500 | Time 0.0044(0.0063) | Loss 3.871624(3.893920)
+Iter 30600 | Time 0.0050(0.0047) | Loss 3.940472(3.899393)
+Iter 30700 | Time 0.0060(0.0058) | Loss 3.920794(3.898401)
+Iter 30800 | Time 0.0052(0.0058) | Loss 3.898555(3.891050)
+Iter 30900 | Time 0.0045(0.0052) | Loss 3.933634(3.889241)
+Iter 31000 | Time 0.0055(0.0059) | Loss 3.872509(3.897959)
+[TEST] Iter 31000 | Test Loss 3.912794
+Iter 31100 | Time 0.0041(0.0063) | Loss 3.859369(3.892798)
+Iter 31200 | Time 0.0118(0.0080) | Loss 3.871581(3.898610)
+Iter 31300 | Time 0.0055(0.0067) | Loss 3.905384(3.894269)
+Iter 31400 | Time 0.0064(0.0078) | Loss 3.899082(3.889171)
+Iter 31500 | Time 0.0052(0.0051) | Loss 3.895202(3.886304)
+Iter 31600 | Time 0.0048(0.0056) | Loss 3.928732(3.890828)
+Iter 31700 | Time 0.0053(0.0064) | Loss 3.846404(3.882056)
+Iter 31800 | Time 0.0040(0.0049) | Loss 3.808143(3.881485)
+Iter 31900 | Time 0.0030(0.0048) | Loss 3.981207(3.887686)
+Iter 32000 | Time 0.0032(0.0048) | Loss 3.924457(3.894081)
+[TEST] Iter 32000 | Test Loss 3.905934
+Iter 32100 | Time 0.0170(0.0057) | Loss 3.949908(3.890808)
+Iter 32200 | Time 0.0043(0.0056) | Loss 3.900787(3.882084)
+Iter 32300 | Time 0.0079(0.0092) | Loss 3.910727(3.896999)
+Iter 32400 | Time 0.0068(0.0073) | Loss 3.849791(3.893298)
+Iter 32500 | Time 0.0033(0.0051) | Loss 3.849652(3.883144)
+Iter 32600 | Time 0.0031(0.0045) | Loss 3.937723(3.886690)
+Iter 32700 | Time 0.0040(0.0045) | Loss 3.863491(3.888123)
+Iter 32800 | Time 0.0051(0.0053) | Loss 3.934737(3.885150)
+Iter 32900 | Time 0.0040(0.0051) | Loss 3.894186(3.884334)
+Iter 33000 | Time 0.0040(0.0045) | Loss 3.876148(3.885180)
+[TEST] Iter 33000 | Test Loss 3.905173
+Iter 33100 | Time 0.0047(0.0057) | Loss 3.834490(3.883150)
+Iter 33200 | Time 0.0034(0.0060) | Loss 3.860918(3.889830)
+Iter 33300 | Time 0.0295(0.0054) | Loss 3.896423(3.886224)
+Iter 33400 | Time 0.0033(0.0074) | Loss 3.923112(3.894023)
+Iter 33500 | Time 0.0043(0.0051) | Loss 3.839487(3.884410)
+Iter 33600 | Time 0.0033(0.0066) | Loss 3.792755(3.884152)
+Iter 33700 | Time 0.0064(0.0092) | Loss 3.808827(3.887472)
+Iter 33800 | Time 0.0042(0.0077) | Loss 3.874309(3.877988)
+Iter 33900 | Time 0.0034(0.0068) | Loss 3.875012(3.883771)
+Iter 34000 | Time 0.0050(0.0074) | Loss 3.905548(3.881839)
+[TEST] Iter 34000 | Test Loss 3.880453
+Iter 34100 | Time 0.0051(0.0066) | Loss 3.909959(3.882156)
+Iter 34200 | Time 0.0038(0.0056) | Loss 3.838861(3.886558)
+Iter 34300 | Time 0.0051(0.0058) | Loss 3.905845(3.892604)
+Iter 34400 | Time 0.0050(0.0053) | Loss 3.921389(3.889071)
+Iter 34500 | Time 0.0035(0.0054) | Loss 3.787021(3.879862)
+Iter 34600 | Time 0.0059(0.0060) | Loss 3.868706(3.885209)
+Iter 34700 | Time 0.0056(0.0052) | Loss 3.861537(3.882829)
+Iter 34800 | Time 0.0042(0.0051) | Loss 3.966991(3.887120)
+Iter 34900 | Time 0.0045(0.0067) | Loss 3.966800(3.882057)
+Iter 35000 | Time 0.0037(0.0063) | Loss 3.876815(3.879406)
+[TEST] Iter 35000 | Test Loss 3.880167
+Iter 35100 | Time 0.0063(0.0056) | Loss 3.833517(3.871774)
+Iter 35200 | Time 0.0039(0.0060) | Loss 3.865446(3.880194)
+Iter 35300 | Time 0.0067(0.0071) | Loss 3.918709(3.884008)
+Iter 35400 | Time 0.0054(0.0067) | Loss 3.862132(3.886339)
+Iter 35500 | Time 0.0031(0.0060) | Loss 3.885437(3.883042)
+Iter 35600 | Time 0.0037(0.0060) | Loss 3.871790(3.881395)
+Iter 35700 | Time 0.0034(0.0056) | Loss 3.826211(3.872117)
+Iter 35800 | Time 0.0047(0.0057) | Loss 3.917674(3.871967)
+Iter 35900 | Time 0.0031(0.0052) | Loss 3.867181(3.883736)
+Iter 36000 | Time 0.0175(0.0077) | Loss 3.920621(3.882510)
+[TEST] Iter 36000 | Test Loss 3.866991
+Iter 36100 | Time 0.0035(0.0075) | Loss 3.792249(3.878942)
+Iter 36200 | Time 0.0047(0.0067) | Loss 3.945472(3.873585)
+Iter 36300 | Time 0.0041(0.0054) | Loss 3.839939(3.884985)
+Iter 36400 | Time 0.0040(0.0050) | Loss 3.851098(3.877071)
+Iter 36500 | Time 0.0052(0.0049) | Loss 3.966495(3.886345)
+Iter 36600 | Time 0.0271(0.0062) | Loss 3.798840(3.879454)
+Iter 36700 | Time 0.0040(0.0048) | Loss 3.906390(3.881013)
+Iter 36800 | Time 0.0035(0.0050) | Loss 3.883422(3.875855)
+Iter 36900 | Time 0.0141(0.0055) | Loss 3.888381(3.869029)
+Iter 37000 | Time 0.0045(0.0068) | Loss 3.947453(3.869261)
+[TEST] Iter 37000 | Test Loss 3.884765
+Iter 37100 | Time 0.0069(0.0060) | Loss 3.952193(3.881348)
+Iter 37200 | Time 0.0053(0.0100) | Loss 3.949777(3.872775)
+Iter 37300 | Time 0.0053(0.0057) | Loss 3.884552(3.879364)
+Iter 37400 | Time 0.0095(0.0053) | Loss 3.861697(3.887310)
+Iter 37500 | Time 0.0381(0.0092) | Loss 3.827510(3.883523)
+Iter 37600 | Time 0.0037(0.0177) | Loss 3.969260(3.885255)
+Iter 37700 | Time 0.0042(0.0086) | Loss 3.843548(3.874512)
+Iter 37800 | Time 0.0061(0.0080) | Loss 3.965707(3.875422)
+Iter 37900 | Time 0.0043(0.0068) | Loss 3.823679(3.881246)
+Iter 38000 | Time 0.0036(0.0055) | Loss 3.885314(3.876109)
+[TEST] Iter 38000 | Test Loss 3.897932
+Iter 38100 | Time 0.0037(0.0075) | Loss 3.932169(3.870742)
+Iter 38200 | Time 0.0048(0.0057) | Loss 3.873376(3.878382)
+Iter 38300 | Time 0.0034(0.0060) | Loss 3.946579(3.876298)
+Iter 38400 | Time 0.0070(0.0073) | Loss 3.894970(3.871205)
+Iter 38500 | Time 0.0071(0.0055) | Loss 3.889383(3.881578)
+Iter 38600 | Time 0.0045(0.0057) | Loss 3.836189(3.872860)
+Iter 38700 | Time 0.0044(0.0065) | Loss 3.906104(3.870417)
+Iter 38800 | Time 0.0037(0.0087) | Loss 3.837090(3.876293)
+Iter 38900 | Time 0.0040(0.0057) | Loss 3.910167(3.871882)
+Iter 39000 | Time 0.0040(0.0050) | Loss 3.968176(3.873375)
+[TEST] Iter 39000 | Test Loss 3.878871
+Iter 39100 | Time 0.0045(0.0063) | Loss 3.883335(3.871865)
+Iter 39200 | Time 0.0031(0.0049) | Loss 3.915372(3.879999)
+Iter 39300 | Time 0.0035(0.0049) | Loss 3.893834(3.876265)
+Iter 39400 | Time 0.0036(0.0053) | Loss 3.793610(3.880122)
+Iter 39500 | Time 0.0060(0.0045) | Loss 3.920464(3.875180)
+Iter 39600 | Time 0.0053(0.0060) | Loss 3.930083(3.871072)
+Iter 39700 | Time 0.0032(0.0046) | Loss 3.847906(3.868304)
+Iter 39800 | Time 0.0033(0.0053) | Loss 3.909266(3.878945)
+Iter 39900 | Time 0.0042(0.0044) | Loss 3.878904(3.872690)
+Iter 40000 | Time 0.0066(0.0054) | Loss 3.914232(3.872868)
+[TEST] Iter 40000 | Test Loss 3.880108
+Iter 40100 | Time 0.0113(0.0139) | Loss 3.854335(3.871259)
+Iter 40200 | Time 0.0087(0.0108) | Loss 3.939413(3.863714)
+Iter 40300 | Time 0.0090(0.0105) | Loss 3.839141(3.870102)
+Iter 40400 | Time 0.0038(0.0097) | Loss 3.804336(3.870571)
+Iter 40500 | Time 0.0043(0.0057) | Loss 3.880836(3.870472)
+Iter 40600 | Time 0.0032(0.0076) | Loss 3.798529(3.869919)
+Iter 40700 | Time 0.0041(0.0088) | Loss 3.855927(3.868193)
+Iter 40800 | Time 0.0140(0.0065) | Loss 3.894917(3.874977)
+Iter 40900 | Time 0.0044(0.0049) | Loss 3.835238(3.869978)
+Iter 41000 | Time 0.0042(0.0064) | Loss 3.866214(3.869567)
+[TEST] Iter 41000 | Test Loss 3.877982
+Iter 41100 | Time 0.0038(0.0099) | Loss 3.932314(3.868127)
+Iter 41200 | Time 0.0041(0.0085) | Loss 3.877112(3.871930)
+Iter 41300 | Time 0.0045(0.0065) | Loss 3.849623(3.868098)
+Iter 41400 | Time 0.0155(0.0094) | Loss 3.885874(3.872601)
+Iter 41500 | Time 0.0252(0.0190) | Loss 3.814299(3.864700)
+Iter 41600 | Time 0.0069(0.0126) | Loss 3.862398(3.865656)
+Iter 41700 | Time 0.0185(0.0276) | Loss 3.850916(3.869467)
+Iter 41800 | Time 0.0061(0.0248) | Loss 3.949150(3.873688)
+Iter 41900 | Time 0.0049(0.0142) | Loss 3.914181(3.877403)
+Iter 42000 | Time 0.0031(0.0063) | Loss 3.857506(3.863930)
+[TEST] Iter 42000 | Test Loss 3.897645
+Iter 42100 | Time 0.0082(0.0075) | Loss 3.849395(3.862596)
+Iter 42200 | Time 0.0137(0.0069) | Loss 3.899799(3.863787)
+Iter 42300 | Time 0.0038(0.0071) | Loss 3.831302(3.873621)
+Iter 42400 | Time 0.0033(0.0087) | Loss 3.925822(3.859464)
+Iter 42500 | Time 0.0048(0.0051) | Loss 3.870639(3.862204)
+Iter 42600 | Time 0.0038(0.0046) | Loss 3.915030(3.867883)
+Iter 42700 | Time 0.0039(0.0043) | Loss 3.835737(3.864929)
+Iter 42800 | Time 0.0032(0.0044) | Loss 3.885155(3.866838)
+Iter 42900 | Time 0.0062(0.0048) | Loss 3.825722(3.870804)
+Iter 43000 | Time 0.0042(0.0042) | Loss 3.872541(3.863119)
+[TEST] Iter 43000 | Test Loss 3.847278
+Iter 43100 | Time 0.0041(0.0051) | Loss 4.010490(3.868716)
+Iter 43200 | Time 0.0032(0.0088) | Loss 3.818963(3.869062)
+Iter 43300 | Time 0.0158(0.0103) | Loss 3.832929(3.860242)
+Iter 43400 | Time 0.0037(0.0060) | Loss 3.805975(3.867437)
+Iter 43500 | Time 0.0066(0.0058) | Loss 3.806757(3.871994)
+Iter 43600 | Time 0.0051(0.0062) | Loss 3.858617(3.861595)
+Iter 43700 | Time 0.0043(0.0058) | Loss 3.899451(3.868833)
+Iter 43800 | Time 0.0042(0.0061) | Loss 3.771915(3.861276)
+Iter 43900 | Time 0.0041(0.0047) | Loss 3.819919(3.861595)
+Iter 44000 | Time 0.0051(0.0061) | Loss 3.857430(3.863319)
+[TEST] Iter 44000 | Test Loss 3.844257
+Iter 44100 | Time 0.0311(0.0064) | Loss 3.952081(3.861631)
+Iter 44200 | Time 0.0045(0.0065) | Loss 3.991461(3.854786)
+Iter 44300 | Time 0.0035(0.0090) | Loss 3.893414(3.874513)
+Iter 44400 | Time 0.0031(0.0056) | Loss 3.765662(3.864998)
+Iter 44500 | Time 0.0059(0.0066) | Loss 3.901032(3.855733)
+Iter 44600 | Time 0.0038(0.0059) | Loss 3.962765(3.868114)
+Iter 44700 | Time 0.0040(0.0053) | Loss 3.850540(3.863168)
+Iter 44800 | Time 0.0040(0.0045) | Loss 3.808337(3.860978)
+Iter 44900 | Time 0.0047(0.0054) | Loss 3.866637(3.862566)
+Iter 45000 | Time 0.0043(0.0054) | Loss 3.874149(3.865667)
+[TEST] Iter 45000 | Test Loss 3.847516
+Iter 45100 | Time 0.0056(0.0062) | Loss 3.824810(3.853372)
+Iter 45200 | Time 0.0064(0.0082) | Loss 3.839958(3.858628)
+Iter 45300 | Time 0.0058(0.0082) | Loss 3.803080(3.854935)
+Iter 45400 | Time 0.0045(0.0061) | Loss 3.787808(3.858173)
+Iter 45500 | Time 0.0038(0.0088) | Loss 3.889212(3.861957)
+Iter 45600 | Time 0.0035(0.0156) | Loss 3.903291(3.862137)
+Iter 45700 | Time 0.0064(0.0087) | Loss 3.893284(3.864960)
+Iter 45800 | Time 0.0085(0.0064) | Loss 3.897140(3.855741)
+Iter 45900 | Time 0.0050(0.0070) | Loss 3.878999(3.857730)
+Iter 46000 | Time 0.0043(0.0074) | Loss 3.879133(3.861575)
+[TEST] Iter 46000 | Test Loss 3.849403
+Iter 46100 | Time 0.0029(0.0053) | Loss 3.833087(3.864624)
+Iter 46200 | Time 0.0047(0.0052) | Loss 3.950803(3.860982)
+Iter 46300 | Time 0.0059(0.0044) | Loss 3.845325(3.869988)
+Iter 46400 | Time 0.0066(0.0046) | Loss 3.918705(3.864586)
+Iter 46500 | Time 0.0046(0.0045) | Loss 3.852744(3.865129)
+Iter 46600 | Time 0.0030(0.0043) | Loss 3.901441(3.864479)
+Iter 46700 | Time 0.0038(0.0066) | Loss 3.826769(3.865962)
+Iter 46800 | Time 0.0032(0.0048) | Loss 3.886799(3.857310)
+Iter 46900 | Time 0.0052(0.0062) | Loss 3.867909(3.856361)
+Iter 47000 | Time 0.0065(0.0054) | Loss 3.882069(3.863040)
+[TEST] Iter 47000 | Test Loss 3.853422
+Iter 47100 | Time 0.0038(0.0054) | Loss 3.941368(3.856691)
+Iter 47200 | Time 0.0030(0.0046) | Loss 3.853170(3.859304)
+Iter 47300 | Time 0.0046(0.0115) | Loss 3.889350(3.859306)
+Iter 47400 | Time 0.0033(0.0074) | Loss 3.843922(3.856612)
+Iter 47500 | Time 0.0042(0.0051) | Loss 3.847362(3.854124)
+Iter 47600 | Time 0.0041(0.0095) | Loss 3.881582(3.852613)
+Iter 47700 | Time 0.0063(0.0063) | Loss 3.818011(3.858902)
+Iter 47800 | Time 0.0062(0.0052) | Loss 3.821311(3.859220)
+Iter 47900 | Time 0.0037(0.0127) | Loss 3.936051(3.855706)
+Iter 48000 | Time 0.0037(0.0073) | Loss 3.898960(3.859402)
+[TEST] Iter 48000 | Test Loss 3.868675
+Iter 48100 | Time 0.0070(0.0054) | Loss 3.821792(3.856101)
+Iter 48200 | Time 0.0043(0.0046) | Loss 3.875468(3.853669)
+Iter 48300 | Time 0.0040(0.0045) | Loss 3.896474(3.858585)
+Iter 48400 | Time 0.0041(0.0050) | Loss 3.842405(3.862482)
+Iter 48500 | Time 0.0048(0.0046) | Loss 3.805579(3.859847)
+Iter 48600 | Time 0.0039(0.0045) | Loss 3.897028(3.848666)
+Iter 48700 | Time 0.0043(0.0052) | Loss 3.777169(3.850063)
+Iter 48800 | Time 0.0050(0.0045) | Loss 3.831562(3.849920)
+Iter 48900 | Time 0.0225(0.0054) | Loss 3.781399(3.854865)
+Iter 49000 | Time 0.0040(0.0055) | Loss 3.773299(3.857430)
+[TEST] Iter 49000 | Test Loss 3.851238
+Iter 49100 | Time 0.0123(0.0104) | Loss 3.877681(3.858610)
+Iter 49200 | Time 0.0105(0.0064) | Loss 3.836398(3.848475)
+Iter 49300 | Time 0.0036(0.0054) | Loss 3.891162(3.859180)
+Iter 49400 | Time 0.0044(0.0073) | Loss 3.844472(3.860318)
+Iter 49500 | Time 0.0125(0.0052) | Loss 3.945414(3.865554)
+Iter 49600 | Time 0.0034(0.0104) | Loss 3.866541(3.861196)
+Iter 49700 | Time 0.0042(0.0059) | Loss 3.980518(3.864260)
+Iter 49800 | Time 0.0051(0.0044) | Loss 3.893622(3.860435)
+Iter 49900 | Time 0.0041(0.0052) | Loss 3.843184(3.858685)
+Iter 50000 | Time 0.0048(0.0044) | Loss 3.838142(3.854181)
+[TEST] Iter 50000 | Test Loss 3.862285
+Iter 50100 | Time 0.0047(0.0048) | Loss 3.850446(3.849179)
+Iter 50200 | Time 0.0040(0.0049) | Loss 3.826530(3.851641)
+Iter 50300 | Time 0.0033(0.0047) | Loss 3.820962(3.850762)
+Iter 50400 | Time 0.0058(0.0067) | Loss 3.851826(3.859630)
+Iter 50500 | Time 0.0067(0.0059) | Loss 3.780170(3.859463)
+Iter 50600 | Time 0.0087(0.0057) | Loss 3.876040(3.855248)
+Iter 50700 | Time 0.0042(0.0050) | Loss 3.785247(3.844314)
+Iter 50800 | Time 0.0044(0.0044) | Loss 3.862779(3.852129)
+Iter 50900 | Time 0.0030(0.0049) | Loss 3.892503(3.848818)
+Iter 51000 | Time 0.0038(0.0045) | Loss 3.911621(3.864070)
+[TEST] Iter 51000 | Test Loss 3.850983
+Iter 51100 | Time 0.0308(0.0059) | Loss 3.866373(3.854553)
+Iter 51200 | Time 0.0032(0.0066) | Loss 4.002801(3.854345)
+Iter 51300 | Time 0.0046(0.0067) | Loss 3.870452(3.853774)
+Iter 51400 | Time 0.0047(0.0060) | Loss 3.960529(3.850045)
+Iter 51500 | Time 0.0037(0.0062) | Loss 3.856681(3.857215)
+Iter 51600 | Time 0.0089(0.0061) | Loss 3.819112(3.850226)
+Iter 51700 | Time 0.0040(0.0046) | Loss 3.787352(3.850920)
+Iter 51800 | Time 0.0036(0.0043) | Loss 3.802437(3.853889)
+Iter 51900 | Time 0.0036(0.0042) | Loss 3.936482(3.856794)
+Iter 52000 | Time 0.0032(0.0041) | Loss 3.845422(3.857678)
+[TEST] Iter 52000 | Test Loss 3.851996
+Iter 52100 | Time 0.0031(0.0048) | Loss 3.874104(3.848567)
+Iter 52200 | Time 0.0031(0.0046) | Loss 3.808050(3.842406)
+Iter 52300 | Time 0.0060(0.0076) | Loss 3.831113(3.853592)
+Iter 52400 | Time 0.0033(0.0069) | Loss 3.868908(3.855436)
+Iter 52500 | Time 0.0062(0.0056) | Loss 3.852534(3.847913)
+Iter 52600 | Time 0.0039(0.0063) | Loss 3.937744(3.855934)
+Iter 52700 | Time 0.0069(0.0046) | Loss 3.886917(3.848289)
+Iter 52800 | Time 0.0384(0.0063) | Loss 3.784956(3.844669)
+Iter 52900 | Time 0.0031(0.0052) | Loss 3.952751(3.852923)
+Iter 53000 | Time 0.0035(0.0042) | Loss 3.897339(3.852151)
+[TEST] Iter 53000 | Test Loss 3.835041
+Iter 53100 | Time 0.0052(0.0097) | Loss 3.795094(3.845591)
+Iter 53200 | Time 0.0053(0.0091) | Loss 3.776005(3.861222)
+Iter 53300 | Time 0.0088(0.0063) | Loss 3.833050(3.845361)
+Iter 53400 | Time 0.0143(0.0129) | Loss 3.818692(3.855646)
+Iter 53500 | Time 0.0044(0.0072) | Loss 3.864225(3.854321)
+Iter 53600 | Time 0.0031(0.0050) | Loss 3.848427(3.854501)
+Iter 53700 | Time 0.0052(0.0109) | Loss 3.888191(3.850709)
+Iter 53800 | Time 0.0118(0.0089) | Loss 3.787046(3.851338)
+Iter 53900 | Time 0.0108(0.0097) | Loss 3.790107(3.844970)
+Iter 54000 | Time 0.0053(0.0094) | Loss 3.866446(3.852397)
+[TEST] Iter 54000 | Test Loss 3.853451
+Iter 54100 | Time 0.0086(0.0142) | Loss 3.859382(3.852524)
+Iter 54200 | Time 0.0049(0.0093) | Loss 3.799842(3.850875)
+Iter 54300 | Time 0.0056(0.0061) | Loss 3.807403(3.853977)
+Iter 54400 | Time 0.0041(0.0070) | Loss 3.749263(3.840604)
+Iter 54500 | Time 0.0052(0.0061) | Loss 3.747153(3.846071)
+Iter 54600 | Time 0.0045(0.0088) | Loss 3.849466(3.840110)
+Iter 54700 | Time 0.0040(0.0056) | Loss 3.874866(3.844391)
+Iter 54800 | Time 0.0040(0.0082) | Loss 3.902289(3.853568)
+Iter 54900 | Time 0.0036(0.0116) | Loss 3.864836(3.840711)
+Iter 55000 | Time 0.0084(0.0062) | Loss 3.846593(3.838579)
+[TEST] Iter 55000 | Test Loss 3.847426
+Iter 55100 | Time 0.0090(0.0063) | Loss 3.887254(3.843619)
+Iter 55200 | Time 0.0034(0.0063) | Loss 3.859430(3.849280)
+Iter 55300 | Time 0.0038(0.0045) | Loss 3.800084(3.845697)
+Iter 55400 | Time 0.0045(0.0054) | Loss 3.864170(3.846386)
+Iter 55500 | Time 0.0035(0.0045) | Loss 3.781356(3.846469)
+Iter 55600 | Time 0.0053(0.0044) | Loss 3.833270(3.859785)
+Iter 55700 | Time 0.0037(0.0047) | Loss 3.799119(3.856809)
+Iter 55800 | Time 0.0041(0.0053) | Loss 3.873569(3.844497)
+Iter 55900 | Time 0.0035(0.0057) | Loss 3.855820(3.848000)
+Iter 56000 | Time 0.0031(0.0065) | Loss 3.865020(3.844963)
+[TEST] Iter 56000 | Test Loss 3.863032
+Iter 56100 | Time 0.0067(0.0068) | Loss 3.858346(3.854352)
+Iter 56200 | Time 0.0034(0.0058) | Loss 3.816964(3.853273)
+Iter 56300 | Time 0.0064(0.0046) | Loss 3.868572(3.843694)
+Iter 56400 | Time 0.0062(0.0083) | Loss 3.839662(3.844545)
+Iter 56500 | Time 0.0068(0.0125) | Loss 3.954064(3.853648)
+Iter 56600 | Time 0.0032(0.0058) | Loss 3.869336(3.846831)
+Iter 56700 | Time 0.0036(0.0052) | Loss 3.840328(3.847097)
+Iter 56800 | Time 0.0077(0.0056) | Loss 3.920835(3.852162)
+Iter 56900 | Time 0.0047(0.0068) | Loss 3.853537(3.858572)
+Iter 57000 | Time 0.0086(0.0109) | Loss 3.886498(3.842688)
+[TEST] Iter 57000 | Test Loss 3.854380
+Iter 57100 | Time 0.0032(0.0128) | Loss 3.785315(3.848111)
+Iter 57200 | Time 0.0146(0.0166) | Loss 3.893983(3.838982)
+Iter 57300 | Time 0.0033(0.0080) | Loss 3.816956(3.850310)
+Iter 57400 | Time 0.0051(0.0054) | Loss 3.794824(3.843481)
+Iter 57500 | Time 0.0049(0.0048) | Loss 3.797160(3.856741)
+Iter 57600 | Time 0.0047(0.0058) | Loss 3.877191(3.841739)
+Iter 57700 | Time 0.0041(0.0066) | Loss 3.837530(3.848318)
+Iter 57800 | Time 0.0043(0.0066) | Loss 3.859549(3.853432)
+Iter 57900 | Time 0.0098(0.0087) | Loss 3.949902(3.853627)
+Iter 58000 | Time 0.0030(0.0083) | Loss 3.832423(3.843309)
+[TEST] Iter 58000 | Test Loss 3.833109
+Iter 58100 | Time 0.0066(0.0097) | Loss 3.833472(3.849797)
+Iter 58200 | Time 0.0063(0.0086) | Loss 3.850848(3.849402)
+Iter 58300 | Time 0.0067(0.0100) | Loss 3.929375(3.839458)
+Iter 58400 | Time 0.0036(0.0058) | Loss 3.838781(3.835231)
+Iter 58500 | Time 0.0120(0.0182) | Loss 3.993364(3.849809)
+Iter 58600 | Time 0.0215(0.0148) | Loss 3.902611(3.851269)
+Iter 58700 | Time 0.0040(0.0090) | Loss 3.875058(3.846735)
+Iter 58800 | Time 0.0052(0.0071) | Loss 3.830109(3.842992)
+Iter 58900 | Time 0.0067(0.0076) | Loss 3.772392(3.842314)
+Iter 59000 | Time 0.0048(0.0079) | Loss 3.844706(3.848007)
+[TEST] Iter 59000 | Test Loss 3.845555
+Iter 59100 | Time 0.0045(0.0101) | Loss 3.813057(3.836644)
+Iter 59200 | Time 0.0090(0.0139) | Loss 3.809477(3.840545)
+Iter 59300 | Time 0.0105(0.0099) | Loss 3.771679(3.843407)
+Iter 59400 | Time 0.0041(0.0090) | Loss 3.872244(3.840269)
+Iter 59500 | Time 0.0050(0.0064) | Loss 3.836834(3.840941)
+Iter 59600 | Time 0.0046(0.0076) | Loss 3.812684(3.840293)
+Iter 59700 | Time 0.0041(0.0075) | Loss 3.826271(3.840728)
+Iter 59800 | Time 0.0045(0.0064) | Loss 3.897447(3.846688)
+Iter 59900 | Time 0.0031(0.0072) | Loss 3.840156(3.842395)
+Iter 60000 | Time 0.0036(0.0105) | Loss 3.793252(3.846372)
+[TEST] Iter 60000 | Test Loss 3.847782
+Iter 60100 | Time 0.0032(0.0068) | Loss 3.835318(3.840681)
+Iter 60200 | Time 0.0154(0.0074) | Loss 3.871556(3.843397)
+Iter 60300 | Time 0.0069(0.0064) | Loss 3.841151(3.839473)
+Iter 60400 | Time 0.0060(0.0075) | Loss 3.894753(3.842677)
+Iter 60500 | Time 0.0126(0.0064) | Loss 3.790547(3.844449)
+Iter 60600 | Time 0.0030(0.0087) | Loss 3.799905(3.848197)
+Iter 60700 | Time 0.0036(0.0072) | Loss 3.844511(3.836369)
+Iter 60800 | Time 0.0043(0.0091) | Loss 3.838019(3.845946)
+Iter 60900 | Time 0.0049(0.0079) | Loss 3.868745(3.843096)
+Iter 61000 | Time 0.0056(0.0075) | Loss 3.758362(3.839796)
+[TEST] Iter 61000 | Test Loss 3.840143
+Iter 61100 | Time 0.0077(0.0068) | Loss 3.804125(3.841016)
+Iter 61200 | Time 0.0062(0.0102) | Loss 3.878157(3.848840)
+Iter 61300 | Time 0.0067(0.0094) | Loss 3.915525(3.845117)
+Iter 61400 | Time 0.0040(0.0103) | Loss 3.833067(3.843173)
+Iter 61500 | Time 0.0099(0.0065) | Loss 3.747563(3.840185)
+Iter 61600 | Time 0.0039(0.0066) | Loss 3.922126(3.838713)
+Iter 61700 | Time 0.0060(0.0090) | Loss 3.796108(3.846670)
+Iter 61800 | Time 0.0461(0.0088) | Loss 3.785963(3.845778)
+Iter 61900 | Time 0.0031(0.0074) | Loss 3.802559(3.844572)
+Iter 62000 | Time 0.0045(0.0071) | Loss 3.834272(3.836732)
+[TEST] Iter 62000 | Test Loss 3.854258
+Iter 62100 | Time 0.0075(0.0060) | Loss 3.853991(3.840006)
+Iter 62200 | Time 0.0074(0.0063) | Loss 3.900044(3.856272)
+Iter 62300 | Time 0.0062(0.0062) | Loss 3.787971(3.840613)
+Iter 62400 | Time 0.0144(0.0085) | Loss 3.794077(3.837053)
+Iter 62500 | Time 0.0106(0.0076) | Loss 3.784984(3.836046)
+Iter 62600 | Time 0.0031(0.0134) | Loss 3.810089(3.833250)
+Iter 62700 | Time 0.0347(0.0125) | Loss 3.803576(3.845804)
+Iter 62800 | Time 0.0059(0.0083) | Loss 3.937874(3.843404)
+Iter 62900 | Time 0.0050(0.0059) | Loss 3.813887(3.841922)
+Iter 63000 | Time 0.0159(0.0059) | Loss 3.832092(3.839263)
+[TEST] Iter 63000 | Test Loss 3.872386
+Iter 63100 | Time 0.0392(0.0144) | Loss 3.859144(3.838608)
+Iter 63200 | Time 0.0039(0.0079) | Loss 3.864431(3.841908)
+Iter 63300 | Time 0.0035(0.0052) | Loss 3.911561(3.845616)
+Iter 63400 | Time 0.0049(0.0050) | Loss 3.844443(3.839169)
+Iter 63500 | Time 0.0041(0.0049) | Loss 3.825475(3.849202)
+Iter 63600 | Time 0.0166(0.0050) | Loss 3.867804(3.832818)
+Iter 63700 | Time 0.0046(0.0046) | Loss 3.824633(3.831614)
+Iter 63800 | Time 0.0055(0.0044) | Loss 3.797459(3.836158)
+Iter 63900 | Time 0.0057(0.0050) | Loss 3.813037(3.845243)
+Iter 64000 | Time 0.0041(0.0049) | Loss 3.686763(3.837829)
+[TEST] Iter 64000 | Test Loss 3.841541
+Iter 64100 | Time 0.0040(0.0050) | Loss 3.917076(3.838852)
+Iter 64200 | Time 0.0029(0.0052) | Loss 3.912562(3.845762)
+Iter 64300 | Time 0.0044(0.0048) | Loss 3.828004(3.834405)
+Iter 64400 | Time 0.0040(0.0052) | Loss 3.745096(3.846548)
+Iter 64500 | Time 0.0048(0.0079) | Loss 3.822168(3.844409)
+Iter 64600 | Time 0.0081(0.0076) | Loss 3.814784(3.837955)
+Iter 64700 | Time 0.0134(0.0058) | Loss 3.881595(3.843681)
+Iter 64800 | Time 0.0038(0.0053) | Loss 3.896037(3.841486)
+Iter 64900 | Time 0.0039(0.0045) | Loss 3.835861(3.828629)
+Iter 65000 | Time 0.0039(0.0065) | Loss 3.877213(3.840519)
+[TEST] Iter 65000 | Test Loss 3.815993
+Iter 65100 | Time 0.0040(0.0051) | Loss 3.848697(3.846333)
+Iter 65200 | Time 0.0043(0.0050) | Loss 3.739405(3.839235)
+Iter 65300 | Time 0.0057(0.0046) | Loss 3.801493(3.839215)
+Iter 65400 | Time 0.0104(0.0066) | Loss 3.839703(3.839097)
+Iter 65500 | Time 0.0035(0.0049) | Loss 3.773061(3.836883)
+Iter 65600 | Time 0.0050(0.0045) | Loss 3.851736(3.826228)
+Iter 65700 | Time 0.0039(0.0044) | Loss 4.001651(3.839696)
+Iter 65800 | Time 0.0047(0.0044) | Loss 3.892069(3.844249)
+Iter 65900 | Time 0.0035(0.0049) | Loss 3.843835(3.845595)
+Iter 66000 | Time 0.0071(0.0052) | Loss 3.770953(3.841532)
+[TEST] Iter 66000 | Test Loss 3.819690
+Iter 66100 | Time 0.0039(0.0053) | Loss 3.911073(3.843448)
+Iter 66200 | Time 0.0055(0.0051) | Loss 3.854578(3.836182)
+Iter 66300 | Time 0.0037(0.0054) | Loss 3.738530(3.832293)
+Iter 66400 | Time 0.0054(0.0054) | Loss 3.776655(3.828949)
+Iter 66500 | Time 0.0034(0.0061) | Loss 3.831555(3.838490)
+Iter 66600 | Time 0.0030(0.0052) | Loss 3.947727(3.843285)
+Iter 66700 | Time 0.0044(0.0050) | Loss 3.776495(3.837816)
+Iter 66800 | Time 0.0036(0.0043) | Loss 3.803249(3.841173)
+Iter 66900 | Time 0.0066(0.0052) | Loss 3.822463(3.842254)
+Iter 67000 | Time 0.0037(0.0052) | Loss 3.801493(3.828409)
+[TEST] Iter 67000 | Test Loss 3.856050
+Iter 67100 | Time 0.0068(0.0056) | Loss 3.849922(3.840774)
+Iter 67200 | Time 0.0057(0.0058) | Loss 3.953140(3.843114)
+Iter 67300 | Time 0.0129(0.0072) | Loss 3.885455(3.831576)
+Iter 67400 | Time 0.0030(0.0064) | Loss 3.879359(3.843159)
+Iter 67500 | Time 0.0084(0.0218) | Loss 3.827025(3.836649)
+Iter 67600 | Time 0.0065(0.0156) | Loss 3.826309(3.835593)
+Iter 67700 | Time 0.0067(0.0072) | Loss 3.741872(3.833384)
+Iter 67800 | Time 0.0041(0.0060) | Loss 3.765991(3.831776)
+Iter 67900 | Time 0.0041(0.0067) | Loss 3.833585(3.832658)
+Iter 68000 | Time 0.0057(0.0055) | Loss 3.863874(3.831896)
+[TEST] Iter 68000 | Test Loss 3.821086
+Iter 68100 | Time 0.0039(0.0092) | Loss 3.836038(3.839839)
+Iter 68200 | Time 0.0084(0.0072) | Loss 3.729233(3.841317)
+Iter 68300 | Time 0.0087(0.0058) | Loss 3.797235(3.831994)
+Iter 68400 | Time 0.0041(0.0049) | Loss 3.878118(3.827399)
+Iter 68500 | Time 0.0036(0.0045) | Loss 3.840173(3.842759)
+Iter 68600 | Time 0.0034(0.0046) | Loss 3.857389(3.829949)
+Iter 68700 | Time 0.0043(0.0046) | Loss 3.782593(3.836596)
+Iter 68800 | Time 0.0034(0.0054) | Loss 3.828647(3.829613)
+Iter 68900 | Time 0.0061(0.0047) | Loss 3.783926(3.830037)
+Iter 69000 | Time 0.0049(0.0046) | Loss 3.916161(3.833968)
+[TEST] Iter 69000 | Test Loss 3.825981
+Iter 69100 | Time 0.0044(0.0052) | Loss 3.880660(3.841811)
+Iter 69200 | Time 0.0057(0.0048) | Loss 3.829829(3.842653)
+Iter 69300 | Time 0.0039(0.0050) | Loss 3.837426(3.833079)
+Iter 69400 | Time 0.0030(0.0050) | Loss 3.756514(3.827941)
+Iter 69500 | Time 0.0091(0.0053) | Loss 3.913726(3.845729)
+Iter 69600 | Time 0.0052(0.0052) | Loss 3.912430(3.850924)
+Iter 69700 | Time 0.0042(0.0055) | Loss 3.831371(3.843299)
+Iter 69800 | Time 0.0072(0.0049) | Loss 3.823298(3.836403)
+Iter 69900 | Time 0.0113(0.0052) | Loss 3.844064(3.832240)
+Iter 70000 | Time 0.0041(0.0051) | Loss 3.848446(3.830235)
+[TEST] Iter 70000 | Test Loss 3.833326
+Iter 70100 | Time 0.0038(0.0071) | Loss 3.781644(3.835920)
+Iter 70200 | Time 0.0033(0.0053) | Loss 3.860760(3.836116)
+Iter 70300 | Time 0.0051(0.0056) | Loss 3.832152(3.833583)
+Iter 70400 | Time 0.0047(0.0053) | Loss 3.861945(3.835311)
+Iter 70500 | Time 0.0044(0.0048) | Loss 3.898715(3.839213)
+Iter 70600 | Time 0.0034(0.0046) | Loss 3.884322(3.841595)
+Iter 70700 | Time 0.0039(0.0045) | Loss 3.823673(3.830968)
+Iter 70800 | Time 0.0032(0.0045) | Loss 3.825806(3.825147)
+Iter 70900 | Time 0.0039(0.0046) | Loss 3.790140(3.831157)
+Iter 71000 | Time 0.0044(0.0045) | Loss 3.830626(3.841771)
+[TEST] Iter 71000 | Test Loss 3.824330
+Iter 71100 | Time 0.0052(0.0052) | Loss 3.862110(3.840925)
+Iter 71200 | Time 0.0054(0.0051) | Loss 3.907798(3.837210)
+Iter 71300 | Time 0.0032(0.0052) | Loss 3.797529(3.828084)
+Iter 71400 | Time 0.0207(0.0057) | Loss 3.826901(3.838188)
+Iter 71500 | Time 0.0051(0.0061) | Loss 3.777181(3.826315)
+Iter 71600 | Time 0.0081(0.0049) | Loss 3.821435(3.825752)
+Iter 71700 | Time 0.0037(0.0054) | Loss 3.820046(3.832958)
+Iter 71800 | Time 0.0036(0.0046) | Loss 3.859499(3.838117)
+Iter 71900 | Time 0.0028(0.0046) | Loss 3.752436(3.837930)
+Iter 72000 | Time 0.0030(0.0047) | Loss 3.855880(3.828698)
+[TEST] Iter 72000 | Test Loss 3.824661
+Iter 72100 | Time 0.0046(0.0058) | Loss 3.748801(3.821087)
+Iter 72200 | Time 0.0074(0.0053) | Loss 3.862979(3.830115)
+Iter 72300 | Time 0.0044(0.0049) | Loss 3.840172(3.826960)
+Iter 72400 | Time 0.0051(0.0052) | Loss 3.771102(3.835640)
+Iter 72500 | Time 0.0063(0.0047) | Loss 3.815776(3.844700)
+Iter 72600 | Time 0.0050(0.0049) | Loss 3.907141(3.836256)
+Iter 72700 | Time 0.0031(0.0046) | Loss 3.804912(3.837558)
+Iter 72800 | Time 0.0034(0.0045) | Loss 3.887755(3.827871)
+Iter 72900 | Time 0.0049(0.0044) | Loss 3.850447(3.834747)
+Iter 73000 | Time 0.0043(0.0044) | Loss 3.758857(3.829054)
+[TEST] Iter 73000 | Test Loss 3.832919
+Iter 73100 | Time 0.0041(0.0062) | Loss 3.863388(3.828389)
+Iter 73200 | Time 0.0076(0.0063) | Loss 3.878043(3.836463)
+Iter 73300 | Time 0.0040(0.0059) | Loss 3.938538(3.832849)
+Iter 73400 | Time 0.0044(0.0073) | Loss 3.808758(3.833882)
+Iter 73500 | Time 0.0180(0.0079) | Loss 3.908721(3.838960)
+Iter 73600 | Time 0.0039(0.0054) | Loss 3.817737(3.836805)
+Iter 73700 | Time 0.0054(0.0049) | Loss 3.766338(3.826792)
+Iter 73800 | Time 0.0048(0.0059) | Loss 3.898472(3.831048)
+Iter 73900 | Time 0.0033(0.0052) | Loss 3.859905(3.824676)
+Iter 74000 | Time 0.0055(0.0053) | Loss 3.818165(3.836300)
+[TEST] Iter 74000 | Test Loss 3.829712
+Iter 74100 | Time 0.0057(0.0051) | Loss 3.828593(3.834437)
+Iter 74200 | Time 0.0037(0.0050) | Loss 3.756207(3.832016)
+Iter 74300 | Time 0.0051(0.0049) | Loss 3.836357(3.827558)
+Iter 74400 | Time 0.0048(0.0072) | Loss 3.804168(3.837382)
+Iter 74500 | Time 0.0032(0.0059) | Loss 3.853704(3.825703)
+Iter 74600 | Time 0.0041(0.0060) | Loss 3.732685(3.827045)
+Iter 74700 | Time 0.0079(0.0113) | Loss 3.882612(3.831494)
+Iter 74800 | Time 0.0055(0.0066) | Loss 3.812747(3.841558)
+Iter 74900 | Time 0.0059(0.0063) | Loss 3.805123(3.825503)
+Iter 75000 | Time 0.0080(0.0065) | Loss 3.804574(3.827866)
+[TEST] Iter 75000 | Test Loss 3.795075
+Iter 75100 | Time 0.0070(0.0082) | Loss 3.836480(3.831151)
+Iter 75200 | Time 0.0095(0.0068) | Loss 3.842478(3.833628)
+Iter 75300 | Time 0.0112(0.0108) | Loss 3.779927(3.832019)
+Iter 75400 | Time 0.0053(0.0119) | Loss 3.793869(3.826790)
+Iter 75500 | Time 0.0099(0.0072) | Loss 3.751830(3.823854)
+Iter 75600 | Time 0.0034(0.0053) | Loss 3.733813(3.828672)
+Iter 75700 | Time 0.0031(0.0095) | Loss 3.778744(3.822996)
+Iter 75800 | Time 0.0056(0.0072) | Loss 3.829340(3.836626)
+Iter 75900 | Time 0.0060(0.0095) | Loss 3.830833(3.828627)
+Iter 76000 | Time 0.0032(0.0132) | Loss 3.800058(3.824059)
+[TEST] Iter 76000 | Test Loss 3.843459
+Iter 76100 | Time 0.0052(0.0070) | Loss 3.814238(3.826911)
+Iter 76200 | Time 0.0035(0.0068) | Loss 3.771566(3.826709)
+Iter 76300 | Time 0.0050(0.0079) | Loss 3.931674(3.831529)
+Iter 76400 | Time 0.0037(0.0053) | Loss 3.870757(3.831466)
+Iter 76500 | Time 0.0038(0.0051) | Loss 3.833278(3.825890)
+Iter 76600 | Time 0.0051(0.0063) | Loss 3.836899(3.825238)
+Iter 76700 | Time 0.0042(0.0057) | Loss 3.802838(3.820301)
+Iter 76800 | Time 0.0046(0.0057) | Loss 3.842628(3.828916)
+Iter 76900 | Time 0.0229(0.0054) | Loss 3.816541(3.834124)
+Iter 77000 | Time 0.0039(0.0125) | Loss 3.776955(3.825506)
+[TEST] Iter 77000 | Test Loss 3.840890
+Iter 77100 | Time 0.0043(0.0067) | Loss 3.868438(3.826161)
+Iter 77200 | Time 0.0081(0.0074) | Loss 3.863242(3.831984)
+Iter 77300 | Time 0.0032(0.0087) | Loss 3.821905(3.833419)
+Iter 77400 | Time 0.0037(0.0050) | Loss 3.847334(3.825199)
+Iter 77500 | Time 0.0047(0.0048) | Loss 3.798624(3.823790)
+Iter 77600 | Time 0.0096(0.0066) | Loss 3.776517(3.820311)
+Iter 77700 | Time 0.0037(0.0059) | Loss 3.781495(3.827140)
+Iter 77800 | Time 0.0055(0.0056) | Loss 3.795756(3.835528)
+Iter 77900 | Time 0.0040(0.0051) | Loss 3.869637(3.830183)
+Iter 78000 | Time 0.0043(0.0054) | Loss 3.815881(3.824921)
+[TEST] Iter 78000 | Test Loss 3.822110
+Iter 78100 | Time 0.0038(0.0055) | Loss 3.809455(3.823769)
+Iter 78200 | Time 0.0031(0.0046) | Loss 3.816439(3.830458)
+Iter 78300 | Time 0.0046(0.0047) | Loss 3.886760(3.824685)
+Iter 78400 | Time 0.0032(0.0043) | Loss 3.904647(3.827659)
+Iter 78500 | Time 0.0058(0.0045) | Loss 3.851040(3.823040)
+Iter 78600 | Time 0.0043(0.0043) | Loss 3.844499(3.837685)
+Iter 78700 | Time 0.0039(0.0054) | Loss 3.832381(3.832080)
+Iter 78800 | Time 0.0037(0.0045) | Loss 3.821607(3.822329)
+Iter 78900 | Time 0.0045(0.0057) | Loss 3.823687(3.827010)
+Iter 79000 | Time 0.0048(0.0058) | Loss 3.796596(3.824537)
+[TEST] Iter 79000 | Test Loss 3.832552
+Iter 79100 | Time 0.0044(0.0051) | Loss 3.889049(3.819766)
+Iter 79200 | Time 0.0058(0.0054) | Loss 3.880183(3.824662)
+Iter 79300 | Time 0.0049(0.0063) | Loss 3.764336(3.828401)
+Iter 79400 | Time 0.0066(0.0058) | Loss 3.910713(3.827380)
+Iter 79500 | Time 0.0048(0.0104) | Loss 3.867162(3.826863)
+Iter 79600 | Time 0.0045(0.0079) | Loss 3.711573(3.825881)
+Iter 79700 | Time 0.0039(0.0073) | Loss 3.806297(3.833356)
+Iter 79800 | Time 0.0055(0.0057) | Loss 3.812375(3.827221)
+Iter 79900 | Time 0.0049(0.0071) | Loss 3.892639(3.819144)
+Iter 80000 | Time 0.0042(0.0062) | Loss 3.824632(3.834895)
+[TEST] Iter 80000 | Test Loss 3.852861
+Iter 80100 | Time 0.0048(0.0084) | Loss 3.810317(3.822805)
+Iter 80200 | Time 0.0031(0.0060) | Loss 3.772866(3.823002)
+Iter 80300 | Time 0.0051(0.0055) | Loss 3.836211(3.822135)
+Iter 80400 | Time 0.0034(0.0045) | Loss 3.882096(3.824461)
+Iter 80500 | Time 0.0078(0.0051) | Loss 3.836744(3.826652)
+Iter 80600 | Time 0.0038(0.0059) | Loss 3.838390(3.823134)
+Iter 80700 | Time 0.0044(0.0050) | Loss 3.804721(3.825099)
+Iter 80800 | Time 0.0104(0.0062) | Loss 3.836524(3.824740)
+Iter 80900 | Time 0.0043(0.0082) | Loss 3.734504(3.821893)
+Iter 81000 | Time 0.0032(0.0049) | Loss 3.873713(3.829096)
+[TEST] Iter 81000 | Test Loss 3.815788
+Iter 81100 | Time 0.0067(0.0060) | Loss 3.822403(3.827676)
+Iter 81200 | Time 0.0044(0.0045) | Loss 3.763570(3.827380)
+Iter 81300 | Time 0.0110(0.0061) | Loss 3.788844(3.818551)
+Iter 81400 | Time 0.0032(0.0045) | Loss 3.824795(3.828696)
+Iter 81500 | Time 0.0046(0.0051) | Loss 3.883078(3.825101)
+Iter 81600 | Time 0.0035(0.0046) | Loss 3.779533(3.830406)
+Iter 81700 | Time 0.0038(0.0050) | Loss 3.741153(3.818660)
+Iter 81800 | Time 0.0036(0.0043) | Loss 3.803607(3.821292)
+Iter 81900 | Time 0.0067(0.0048) | Loss 3.752062(3.830447)
+Iter 82000 | Time 0.0036(0.0043) | Loss 3.849893(3.834934)
+[TEST] Iter 82000 | Test Loss 3.826627
+Iter 82100 | Time 0.0033(0.0048) | Loss 3.857896(3.827656)
+Iter 82200 | Time 0.0038(0.0048) | Loss 3.785011(3.825540)
+Iter 82300 | Time 0.0033(0.0050) | Loss 3.775316(3.814095)
+Iter 82400 | Time 0.0062(0.0043) | Loss 3.818694(3.823560)
+Iter 82500 | Time 0.0039(0.0044) | Loss 3.958809(3.822337)
+Iter 82600 | Time 0.0059(0.0044) | Loss 3.838410(3.825004)
+Iter 82700 | Time 0.0043(0.0047) | Loss 3.872399(3.831051)
+Iter 82800 | Time 0.0030(0.0044) | Loss 3.751922(3.821271)
+Iter 82900 | Time 0.0037(0.0047) | Loss 3.875082(3.822035)
+Iter 83000 | Time 0.0041(0.0045) | Loss 3.854472(3.821176)
+[TEST] Iter 83000 | Test Loss 3.829892
+Iter 83100 | Time 0.0039(0.0052) | Loss 3.760055(3.823990)
+Iter 83200 | Time 0.0038(0.0110) | Loss 3.750853(3.820564)
+Iter 83300 | Time 0.0040(0.0065) | Loss 3.787708(3.823455)
+Iter 83400 | Time 0.0131(0.0067) | Loss 3.796797(3.831127)
+Iter 83500 | Time 0.0052(0.0052) | Loss 3.831770(3.823893)
+Iter 83600 | Time 0.0069(0.0052) | Loss 3.840916(3.824878)
+Iter 83700 | Time 0.0060(0.0071) | Loss 3.845398(3.833024)
+Iter 83800 | Time 0.0049(0.0054) | Loss 3.913047(3.829528)
+Iter 83900 | Time 0.0033(0.0046) | Loss 3.893413(3.824278)
+Iter 84000 | Time 0.0044(0.0043) | Loss 3.818169(3.822376)
+[TEST] Iter 84000 | Test Loss 3.825179
+Iter 84100 | Time 0.0055(0.0069) | Loss 3.855026(3.820945)
+Iter 84200 | Time 0.0047(0.0058) | Loss 3.796877(3.820705)
+Iter 84300 | Time 0.0035(0.0060) | Loss 3.842540(3.822097)
+Iter 84400 | Time 0.0057(0.0054) | Loss 3.925158(3.835816)
+Iter 84500 | Time 0.0048(0.0058) | Loss 3.772472(3.821275)
+Iter 84600 | Time 0.0075(0.0048) | Loss 3.919375(3.826799)
+Iter 84700 | Time 0.0057(0.0050) | Loss 3.740195(3.819168)
+Iter 84800 | Time 0.0044(0.0048) | Loss 3.853411(3.828645)
+Iter 84900 | Time 0.0046(0.0045) | Loss 3.868400(3.821441)
+Iter 85000 | Time 0.0037(0.0046) | Loss 3.917392(3.831171)
+[TEST] Iter 85000 | Test Loss 3.850495
+Iter 85100 | Time 0.0052(0.0050) | Loss 3.858908(3.822068)
+Iter 85200 | Time 0.0086(0.0046) | Loss 3.768421(3.815805)
+Iter 85300 | Time 0.0038(0.0055) | Loss 3.781493(3.811929)
+Iter 85400 | Time 0.0057(0.0071) | Loss 3.791329(3.823933)
+Iter 85500 | Time 0.0034(0.0058) | Loss 3.826038(3.824014)
+Iter 85600 | Time 0.0073(0.0066) | Loss 3.773563(3.828539)
+Iter 85700 | Time 0.0131(0.0064) | Loss 3.915452(3.828113)
+Iter 85800 | Time 0.0037(0.0083) | Loss 3.851642(3.829869)
+Iter 85900 | Time 0.0064(0.0058) | Loss 3.817473(3.827908)
+Iter 86000 | Time 0.0036(0.0051) | Loss 3.809261(3.818151)
+[TEST] Iter 86000 | Test Loss 3.830294
+Iter 86100 | Time 0.0056(0.0050) | Loss 3.782094(3.825305)
+Iter 86200 | Time 0.0064(0.0044) | Loss 3.835602(3.823366)
+Iter 86300 | Time 0.0054(0.0047) | Loss 3.725049(3.825647)
+Iter 86400 | Time 0.0062(0.0054) | Loss 3.747283(3.824375)
+Iter 86500 | Time 0.0040(0.0048) | Loss 3.834708(3.825504)
+Iter 86600 | Time 0.0043(0.0046) | Loss 3.821848(3.831664)
+Iter 86700 | Time 0.0067(0.0043) | Loss 3.812492(3.824270)
+Iter 86800 | Time 0.0032(0.0064) | Loss 3.786441(3.821048)
+Iter 86900 | Time 0.0039(0.0058) | Loss 3.799796(3.810964)
+Iter 87000 | Time 0.0069(0.0051) | Loss 3.797062(3.826511)
+[TEST] Iter 87000 | Test Loss 3.837321
+Iter 87100 | Time 0.0041(0.0063) | Loss 3.829360(3.814440)
+Iter 87200 | Time 0.0034(0.0057) | Loss 3.738308(3.818399)
+Iter 87300 | Time 0.0035(0.0045) | Loss 3.845445(3.814738)
+Iter 87400 | Time 0.0115(0.0097) | Loss 3.719416(3.825781)
+Iter 87500 | Time 0.0057(0.0070) | Loss 3.844907(3.833936)
+Iter 87600 | Time 0.0036(0.0052) | Loss 3.891277(3.821842)
+Iter 87700 | Time 0.0034(0.0067) | Loss 3.831965(3.821307)
+Iter 87800 | Time 0.0044(0.0070) | Loss 3.803535(3.816988)
+Iter 87900 | Time 0.0032(0.0051) | Loss 3.827477(3.821302)
+Iter 88000 | Time 0.0048(0.0046) | Loss 3.857479(3.826177)
+[TEST] Iter 88000 | Test Loss 3.804975
+Iter 88100 | Time 0.0050(0.0048) | Loss 3.838958(3.822083)
+Iter 88200 | Time 0.0047(0.0046) | Loss 3.819791(3.813708)
+Iter 88300 | Time 0.0034(0.0045) | Loss 3.732448(3.810592)
+Iter 88400 | Time 0.0039(0.0053) | Loss 3.879127(3.821887)
+Iter 88500 | Time 0.0069(0.0064) | Loss 3.810056(3.817540)
+Iter 88600 | Time 0.0041(0.0047) | Loss 3.840662(3.825793)
+Iter 88700 | Time 0.0058(0.0043) | Loss 3.822376(3.813483)
+Iter 88800 | Time 0.0046(0.0045) | Loss 3.858278(3.818050)
+Iter 88900 | Time 0.0052(0.0045) | Loss 3.746154(3.811486)
+Iter 89000 | Time 0.0034(0.0051) | Loss 3.785527(3.815966)
+[TEST] Iter 89000 | Test Loss 3.786125
+Iter 89100 | Time 0.0043(0.0054) | Loss 3.796582(3.826431)
+Iter 89200 | Time 0.0053(0.0056) | Loss 3.797109(3.826183)
+Iter 89300 | Time 0.0036(0.0047) | Loss 3.790975(3.822205)
+Iter 89400 | Time 0.0048(0.0048) | Loss 3.786525(3.821337)
+Iter 89500 | Time 0.0039(0.0041) | Loss 3.822343(3.828985)
+Iter 89600 | Time 0.0041(0.0049) | Loss 3.877874(3.811429)
+Iter 89700 | Time 0.0037(0.0065) | Loss 3.932836(3.821635)
+Iter 89800 | Time 0.0040(0.0053) | Loss 3.780661(3.826982)
+Iter 89900 | Time 0.0045(0.0044) | Loss 3.802009(3.813659)
+Iter 90000 | Time 0.0065(0.0048) | Loss 3.854450(3.815073)
+[TEST] Iter 90000 | Test Loss 3.844195
+Iter 90100 | Time 0.0054(0.0049) | Loss 3.824222(3.816611)
+Iter 90200 | Time 0.0037(0.0053) | Loss 3.848145(3.820229)
+Iter 90300 | Time 0.0035(0.0049) | Loss 3.833701(3.808024)
+Iter 90400 | Time 0.0039(0.0053) | Loss 3.878416(3.819666)
+Iter 90500 | Time 0.0039(0.0057) | Loss 3.803270(3.813222)
+Iter 90600 | Time 0.0075(0.0060) | Loss 3.789871(3.815564)
+Iter 90700 | Time 0.0032(0.0053) | Loss 3.808848(3.811528)
+Iter 90800 | Time 0.0039(0.0052) | Loss 3.864591(3.821038)
+Iter 90900 | Time 0.0031(0.0050) | Loss 3.779332(3.819930)
+Iter 91000 | Time 0.0049(0.0054) | Loss 3.860772(3.823483)
+[TEST] Iter 91000 | Test Loss 3.829865
+Iter 91100 | Time 0.0073(0.0061) | Loss 3.719977(3.810092)
+Iter 91200 | Time 0.0077(0.0055) | Loss 3.795677(3.815594)
+Iter 91300 | Time 0.0052(0.0064) | Loss 3.819746(3.814815)
+Iter 91400 | Time 0.0045(0.0084) | Loss 3.843891(3.819275)
+Iter 91500 | Time 0.0030(0.0059) | Loss 3.739450(3.811727)
+Iter 91600 | Time 0.0064(0.0059) | Loss 3.809705(3.809620)
+Iter 91700 | Time 0.0044(0.0052) | Loss 3.820216(3.806478)
+Iter 91800 | Time 0.0032(0.0044) | Loss 3.733840(3.817481)
+Iter 91900 | Time 0.0069(0.0044) | Loss 3.910035(3.824597)
+Iter 92000 | Time 0.0055(0.0045) | Loss 3.826102(3.817656)
+[TEST] Iter 92000 | Test Loss 3.818909
+Iter 92100 | Time 0.0037(0.0102) | Loss 3.791999(3.817507)
+Iter 92200 | Time 0.0037(0.0073) | Loss 3.841047(3.818149)
+Iter 92300 | Time 0.0040(0.0049) | Loss 3.820637(3.811515)
+Iter 92400 | Time 0.0077(0.0058) | Loss 3.797580(3.818390)
+Iter 92500 | Time 0.0045(0.0049) | Loss 3.860154(3.817625)
+Iter 92600 | Time 0.0031(0.0047) | Loss 3.917572(3.816803)
+Iter 92700 | Time 0.0037(0.0070) | Loss 3.859142(3.809656)
+Iter 92800 | Time 0.0032(0.0070) | Loss 3.839931(3.821505)
+Iter 92900 | Time 0.0041(0.0049) | Loss 3.827094(3.815824)
+Iter 93000 | Time 0.0039(0.0049) | Loss 3.790516(3.812718)
+[TEST] Iter 93000 | Test Loss 3.812079
+Iter 93100 | Time 0.0058(0.0049) | Loss 3.768072(3.812871)
+Iter 93200 | Time 0.0034(0.0054) | Loss 3.833804(3.812737)
+Iter 93300 | Time 0.0035(0.0052) | Loss 3.826336(3.820650)
+Iter 93400 | Time 0.0030(0.0049) | Loss 3.758091(3.814336)
+Iter 93500 | Time 0.0049(0.0055) | Loss 3.816835(3.815379)
+Iter 93600 | Time 0.0076(0.0084) | Loss 3.847905(3.813431)
+Iter 93700 | Time 0.0051(0.0069) | Loss 3.880316(3.810768)
+Iter 93800 | Time 0.0030(0.0080) | Loss 3.846245(3.813931)
+Iter 93900 | Time 0.0060(0.0077) | Loss 3.777842(3.818712)
+Iter 94000 | Time 0.0030(0.0099) | Loss 3.826256(3.812539)
+[TEST] Iter 94000 | Test Loss 3.796592
+Iter 94100 | Time 0.0048(0.0083) | Loss 3.767290(3.819590)
+Iter 94200 | Time 0.0056(0.0069) | Loss 3.861565(3.817035)
+Iter 94300 | Time 0.0044(0.0077) | Loss 3.947777(3.816794)
+Iter 94400 | Time 0.0051(0.0065) | Loss 3.824671(3.818104)
+Iter 94500 | Time 0.0060(0.0063) | Loss 3.863810(3.820217)
+Iter 94600 | Time 0.0044(0.0071) | Loss 3.757382(3.821928)
+Iter 94700 | Time 0.0041(0.0101) | Loss 3.839373(3.819197)
+Iter 94800 | Time 0.0045(0.0061) | Loss 3.823605(3.809711)
+Iter 94900 | Time 0.0048(0.0061) | Loss 3.779692(3.811596)
+Iter 95000 | Time 0.0043(0.0055) | Loss 3.911071(3.820498)
+[TEST] Iter 95000 | Test Loss 3.808221
+Iter 95100 | Time 0.0044(0.0055) | Loss 3.834653(3.811251)
+Iter 95200 | Time 0.0044(0.0111) | Loss 3.811978(3.816145)
+Iter 95300 | Time 0.0127(0.0073) | Loss 3.794925(3.816265)
+Iter 95400 | Time 0.0137(0.0074) | Loss 3.797102(3.810320)
+Iter 95500 | Time 0.0051(0.0060) | Loss 3.784490(3.809159)
+Iter 95600 | Time 0.0178(0.0079) | Loss 3.813758(3.809315)
+Iter 95700 | Time 0.0039(0.0074) | Loss 3.866532(3.818336)
+Iter 95800 | Time 0.0069(0.0054) | Loss 3.763043(3.821000)
+Iter 95900 | Time 0.0045(0.0095) | Loss 3.800273(3.808732)
+Iter 96000 | Time 0.0043(0.0061) | Loss 3.787241(3.812597)
+[TEST] Iter 96000 | Test Loss 3.816458
+Iter 96100 | Time 0.0043(0.0054) | Loss 3.841753(3.815097)
+Iter 96200 | Time 0.0131(0.0082) | Loss 3.931387(3.813620)
+Iter 96300 | Time 0.0052(0.0064) | Loss 3.762458(3.815874)
+Iter 96400 | Time 0.0041(0.0050) | Loss 3.904752(3.809500)
+Iter 96500 | Time 0.0039(0.0055) | Loss 3.795596(3.809651)
+Iter 96600 | Time 0.0058(0.0056) | Loss 3.792268(3.818557)
+Iter 96700 | Time 0.0037(0.0045) | Loss 3.879947(3.812117)
+Iter 96800 | Time 0.0048(0.0045) | Loss 3.782968(3.807734)
+Iter 96900 | Time 0.0052(0.0049) | Loss 3.879144(3.821038)
+Iter 97000 | Time 0.0038(0.0048) | Loss 3.795964(3.817723)
+[TEST] Iter 97000 | Test Loss 3.794324
+Iter 97100 | Time 0.0044(0.0052) | Loss 3.873383(3.816126)
+Iter 97200 | Time 0.0046(0.0141) | Loss 3.802648(3.815753)
+Iter 97300 | Time 0.0042(0.0060) | Loss 3.857244(3.816255)
+Iter 97400 | Time 0.0035(0.0046) | Loss 3.797437(3.819078)
+Iter 97500 | Time 0.0046(0.0046) | Loss 3.828541(3.808376)
+Iter 97600 | Time 0.0037(0.0043) | Loss 3.736620(3.804486)
+Iter 97700 | Time 0.0040(0.0042) | Loss 3.878814(3.811935)
+Iter 97800 | Time 0.0053(0.0043) | Loss 3.787222(3.806499)
+Iter 97900 | Time 0.0135(0.0044) | Loss 3.875652(3.814537)
+Iter 98000 | Time 0.0051(0.0052) | Loss 3.780628(3.810326)
+[TEST] Iter 98000 | Test Loss 3.815585
+Iter 98100 | Time 0.0041(0.0046) | Loss 3.813859(3.805123)
+Iter 98200 | Time 0.0029(0.0046) | Loss 3.854745(3.807323)
+Iter 98300 | Time 0.0034(0.0044) | Loss 3.826973(3.807982)
+Iter 98400 | Time 0.0042(0.0041) | Loss 3.840695(3.798778)
+Iter 98500 | Time 0.0050(0.0046) | Loss 3.807113(3.806347)
+Iter 98600 | Time 0.0040(0.0047) | Loss 3.883101(3.812788)
+Iter 98700 | Time 0.0049(0.0046) | Loss 3.802835(3.812882)
+Iter 98800 | Time 0.0046(0.0041) | Loss 3.790894(3.809944)
+Iter 98900 | Time 0.0041(0.0043) | Loss 3.833165(3.816515)
+Iter 99000 | Time 0.0050(0.0043) | Loss 3.812487(3.818878)
+[TEST] Iter 99000 | Test Loss 3.835936
+Iter 99100 | Time 0.0040(0.0066) | Loss 3.837194(3.812178)
+Iter 99200 | Time 0.0038(0.0048) | Loss 3.787796(3.814115)
+Iter 99300 | Time 0.0043(0.0043) | Loss 3.862351(3.815221)
+Iter 99400 | Time 0.0040(0.0047) | Loss 3.844284(3.812057)
+Iter 99500 | Time 0.0041(0.0043) | Loss 3.934434(3.811823)
+Iter 99600 | Time 0.0035(0.0051) | Loss 3.865581(3.817671)
+Iter 99700 | Time 0.0035(0.0045) | Loss 3.791890(3.816103)
+Iter 99800 | Time 0.0034(0.0042) | Loss 3.873698(3.810321)
+Iter 99900 | Time 0.0035(0.0043) | Loss 3.839697(3.815005)
+Iter 100000 | Time 0.0036(0.0044) | Loss 3.777471(3.820914)
+[TEST] Iter 100000 | Test Loss 3.820942
+[TEST] Iter 100001 | Test Loss 3.804084
+Training has finished.
