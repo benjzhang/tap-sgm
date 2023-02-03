@@ -1,0 +1,21 @@
+#!/bin/bash
+#SBATCH -c 4  # Number of Cores per Task
+#SBATCH --mem=8192  # Requested Memory
+#SBATCH -p gpu  # Partition
+#SBATCH -G 1  # Number of GPUs
+#SBATCH -t 24:00:00  # Job time limit
+#SBATCH -o slurm-ffjordglowtesst.out  # %j = job ID
+
+module load miniconda
+conda activate generativetmula
+python train_discrete_toy.py --data '8gaussians' --depth 10 --glow True --save 'experiments/cnf/8gaussians_depth10' 
+python train_discrete_toy.py --data 'pinwheel' --depth 10 --glow True --save 'experiments/cnf/pinwheel_depth10' 
+python train_discrete_toy.py --data 'moons' --depth 10 --glow True --save 'experiments/cnf/moons_depth10' 
+python train_discrete_toy.py --data 'checkerboard' --depth 10 --glow True --save 'experiments/cnf/checkerboard_depth10' 
+python train_discrete_toy.py --data '2spirals' --depth 10 --glow True --save 'experiments/cnf/2spirals_depth10' 
+
+python train_discrete_toy.py --data 'swissroll' --depth 10 --glow True --save 'experiments/cnf/swissroll_depth10' 
+python train_discrete_toy.py --data 'circles' --depth 10 --glow True --save 'experiments/cnf/circles_depth10' 
+python train_discrete_toy.py --data 'rings' --depth 10 --glow True --save 'experiments/cnf/rings_depth10' 
+python train_discrete_toy.py --data 'cos' --depth 10 --glow True --save 'experiments/cnf/cos_depth10' 
+python train_discrete_toy.py --data 'line' --depth 10 --glow True --save 'experiments/cnf/line_depth10' 
