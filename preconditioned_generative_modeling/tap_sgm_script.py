@@ -182,6 +182,8 @@ for step in range(epochs):
     p_samples = toy_data.inf_train_gen(dataset, batch_size = batch_size)
     samples = torch.tensor(p_samples).to(dtype = torch.float32)
 
+    samples = model(samples,None,reverse = False) 
+
     half = int(batch_size/2)
     samples1 = samples[0:half,:]
     samples2 = samples[half:-1,:]
@@ -311,7 +313,7 @@ plt.savefig(savename)
 
 plt.clf()
 
-fig,axs = plt.subplots(1,7)
+fig,axs = plt.subplots(1,6)
 samples_nf = model(samples_true,None,reverse = False)
 
 for jj in range(6):
