@@ -6,12 +6,8 @@
 #SBATCH -o slurm-tapsgm.out  # %j = job ID
 
 module load miniconda
-conda activate generativetmula
-python tap_sgm_script.py --data swissroll --tint 0.02 --finalT 0.5 
-python tap_sgm_script.py --data 8gaussians --tint 0.02 --finalT 0.5 
-python tap_sgm_script.py --data pinwheel --tint 0.02 --finalT 0.5 
-python tap_sgm_script.py --data circles --tint 0.02 --finalT 0.5 
-python tap_sgm_script.py --data moons --tint 0.02 --finalT 0.5 
-python tap_sgm_script.py --data 2spirals --tint 0.02 --finalT 0.5 
+conda activate generativetmula 
+python tap_sgm_script.py --data 8gaussians --tint 0.05 --finalT 1.0
+python tap_sgm_script.py --data pinwheel --tint 0.02 --finalT 0.5  
+python tap_sgm_script.py --data moons --tint 0.02 --finalT 0.5  
 python tap_sgm_script.py --data checkerboard --tint 0.02 --finalT 0.5 
-python tap_sgm_script.py --data rings --tint 0.02 --finalT 0.5 
