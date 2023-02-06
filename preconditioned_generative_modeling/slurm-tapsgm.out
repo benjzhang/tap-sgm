@@ -18,16 +18,16 @@ DenoisingModel(
   (activation8): GELU(approximate='none')
   (fc9): Linear(in_features=32, out_features=2, bias=True)
 )
-tensor(180.0236, grad_fn=<AddBackward0>) 0
-tensor(411.2259, grad_fn=<AddBackward0>) 100
-tensor(391.4636, grad_fn=<AddBackward0>) 200
-tensor(329.1986, grad_fn=<AddBackward0>) 300
-tensor(197.9005, grad_fn=<AddBackward0>) 400
-tensor(217.0576, grad_fn=<AddBackward0>) 500
-tensor(351.9630, grad_fn=<AddBackward0>) 600
-tensor(172.8357, grad_fn=<AddBackward0>) 700
-tensor(282.0273, grad_fn=<AddBackward0>) 800
-tensor(239.0639, grad_fn=<AddBackward0>) 900
+tensor(173.7515, grad_fn=<AddBackward0>) 0
+tensor(285.9932, grad_fn=<AddBackward0>) 100
+tensor(292.1324, grad_fn=<AddBackward0>) 200
+tensor(227.1384, grad_fn=<AddBackward0>) 300
+tensor(213.3593, grad_fn=<AddBackward0>) 400
+tensor(221.7029, grad_fn=<AddBackward0>) 500
+tensor(266.1570, grad_fn=<AddBackward0>) 600
+tensor(188.3668, grad_fn=<AddBackward0>) 700
+tensor(378.1070, grad_fn=<AddBackward0>) 800
+tensor(366.7566, grad_fn=<AddBackward0>) 900
 DenoisingModel(
   (fc1): Linear(in_features=3, out_features=32, bias=True)
   (activation1): cosineact()
@@ -47,9 +47,13 @@ DenoisingModel(
   (activation8): GELU(approximate='none')
   (fc9): Linear(in_features=32, out_features=2, bias=True)
 )
-Traceback (most recent call last):
-  File "/work/bjzhang_umass_edu/generative_tmula/preconditioned_generative_modeling/tap_sgm_script.py", line 218, in <module>
-    p_samples = toy_data.inf_train_gen(dataset, batch_size)
-  File "/work/bjzhang_umass_edu/generative_tmula/preconditioned_generative_modeling/lib/toy_data.py", line 69, in inf_train_gen
-    point = rng.randn(2) * 0.5
-AttributeError: 'int' object has no attribute 'randn'
+tensor(213.2457, grad_fn=<AddBackward0>) 0
+tensor(167.1461, grad_fn=<AddBackward0>) 100
+tensor(353.7176, grad_fn=<AddBackward0>) 200
+tensor(258.7971, grad_fn=<AddBackward0>) 300
+tensor(182.9575, grad_fn=<AddBackward0>) 400
+tensor(127.7674, grad_fn=<AddBackward0>) 500
+tensor(202.3511, grad_fn=<AddBackward0>) 600
+tensor(212.5458, grad_fn=<AddBackward0>) 700
+tensor(203.5171, grad_fn=<AddBackward0>) 800
+tensor(283.1490, grad_fn=<AddBackward0>) 900
