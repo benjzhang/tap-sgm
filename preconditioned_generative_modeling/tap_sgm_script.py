@@ -215,7 +215,7 @@ def deterministic_time_dsm_score_estimator(scorenet,samples,t):
 
 for step in range(epochs):
     # sample toy_data
-    p_samples = toy_data.inf_train_gen(dataset, batch_size)
+    p_samples = toy_data.inf_train_gen(dataset, batch_size = batch_size)
     samples = torch.tensor(p_samples).to(dtype = torch.float32)
     samples = model(samples,None,reverse=False)
 
