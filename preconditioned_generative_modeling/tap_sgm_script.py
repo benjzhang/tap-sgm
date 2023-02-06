@@ -394,6 +394,10 @@ plt.title('Map only')
 savename = savedir + 'map_only.png'
 plt.savefig(savename)
 
+
+savename = savedir + 'scorenet'
+torch.save(scorenet,savename)
+
 # %%
 
 
