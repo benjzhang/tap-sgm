@@ -1,0 +1,17 @@
+#!/bin/bash
+#SBATCH -c 4  # Number of Cores per Task
+#SBATCH --mem=8192  # Requested Memory
+#SBATCH -p cpu  # Partition
+#SBATCH -t 24:00:00  # Job time limit
+#SBATCH -o slurm-tapsgm.out  # %j = job ID
+
+module load miniconda
+conda activate generativetmula
+python tap_sgm_script.py --data swissroll --tint 0.02 --finalT 0.5 
+python tap_sgm_script.py --data 8gaussians --tint 0.02 --finalT 0.5 
+python tap_sgm_script.py --data pinwheel --tint 0.02 --finalT 0.5 
+python tap_sgm_script.py --data circles --tint 0.02 --finalT 0.5 
+python tap_sgm_script.py --data moons --tint 0.02 --finalT 0.5 
+python tap_sgm_script.py --data 2spirals --tint 0.02 --finalT 0.5 
+python tap_sgm_script.py --data checkerboard --tint 0.02 --finalT 0.5 
+python tap_sgm_script.py --data rings --tint 0.02 --finalT 0.5 
