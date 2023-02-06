@@ -1,0 +1,55 @@
+Loading miniconda version 22.11.1-1
+DenoisingModel(
+  (fc1): Linear(in_features=3, out_features=32, bias=True)
+  (activation1): cosineact()
+  (fc2): Linear(in_features=32, out_features=32, bias=True)
+  (activation2): GELU(approximate='none')
+  (fc3): Linear(in_features=32, out_features=3, bias=True)
+  (activation3): GELU(approximate='none')
+  (fc4): Linear(in_features=3, out_features=32, bias=True)
+  (activation4): GELU(approximate='none')
+  (fc5): Linear(in_features=32, out_features=32, bias=True)
+  (activation5): GELU(approximate='none')
+  (fc6): Linear(in_features=32, out_features=3, bias=True)
+  (activation6): GELU(approximate='none')
+  (fc7): Linear(in_features=3, out_features=32, bias=True)
+  (activation7): GELU(approximate='none')
+  (fc8): Linear(in_features=32, out_features=32, bias=True)
+  (activation8): GELU(approximate='none')
+  (fc9): Linear(in_features=32, out_features=2, bias=True)
+)
+tensor(180.0236, grad_fn=<AddBackward0>) 0
+tensor(411.2259, grad_fn=<AddBackward0>) 100
+tensor(391.4636, grad_fn=<AddBackward0>) 200
+tensor(329.1986, grad_fn=<AddBackward0>) 300
+tensor(197.9005, grad_fn=<AddBackward0>) 400
+tensor(217.0576, grad_fn=<AddBackward0>) 500
+tensor(351.9630, grad_fn=<AddBackward0>) 600
+tensor(172.8357, grad_fn=<AddBackward0>) 700
+tensor(282.0273, grad_fn=<AddBackward0>) 800
+tensor(239.0639, grad_fn=<AddBackward0>) 900
+DenoisingModel(
+  (fc1): Linear(in_features=3, out_features=32, bias=True)
+  (activation1): cosineact()
+  (fc2): Linear(in_features=32, out_features=32, bias=True)
+  (activation2): GELU(approximate='none')
+  (fc3): Linear(in_features=32, out_features=3, bias=True)
+  (activation3): GELU(approximate='none')
+  (fc4): Linear(in_features=3, out_features=32, bias=True)
+  (activation4): GELU(approximate='none')
+  (fc5): Linear(in_features=32, out_features=32, bias=True)
+  (activation5): GELU(approximate='none')
+  (fc6): Linear(in_features=32, out_features=3, bias=True)
+  (activation6): GELU(approximate='none')
+  (fc7): Linear(in_features=3, out_features=32, bias=True)
+  (activation7): GELU(approximate='none')
+  (fc8): Linear(in_features=32, out_features=32, bias=True)
+  (activation8): GELU(approximate='none')
+  (fc9): Linear(in_features=32, out_features=2, bias=True)
+)
+Traceback (most recent call last):
+  File "/work/bjzhang_umass_edu/generative_tmula/preconditioned_generative_modeling/tap_sgm_script.py", line 218, in <module>
+    p_samples = toy_data.inf_train_gen(dataset, batch_size)
+  File "/work/bjzhang_umass_edu/generative_tmula/preconditioned_generative_modeling/lib/toy_data.py", line 69, in inf_train_gen
+    point = rng.randn(2) * 0.5
+AttributeError: 'int' object has no attribute 'randn'
