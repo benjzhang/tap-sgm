@@ -262,7 +262,7 @@ samples_deterministic_target = model(torch.tensor(samples_deterministic),None,re
 # Make and save plots
 
 # %%
-savedir = saveloc + '/' + dataset + '_precdepth3_scoredepth' + str(args.depth)+'_tapsgm/'
+savedir = saveloc + '/' + dataset + '_precdepth3_scoredepth' + str(args.depth)+ 'timeT0p' + str(args.finalT *100 )+'_tapsgm/'
 
 # Check whether the specified path exists or not
 isExist = os.path.exists(savedir)

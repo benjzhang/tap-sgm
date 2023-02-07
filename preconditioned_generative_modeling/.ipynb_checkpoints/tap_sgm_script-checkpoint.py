@@ -26,17 +26,19 @@ parser.add_argument(
 )
 
 
-# parser.add_argument('--depth', help='number of coupling layers', type=int, default=8)
+parser.add_argument('--depth', help='number of layers of score work', type=int, default=8)
+parser.add_argument('--hiddenunits',type = int, default = 32)
 parser.add_argument('--niters', type=int, default=100001)
 parser.add_argument('--batch_size', type=int, default=256)
 parser.add_argument('--lr', type=float, default=1e-3)
 parser.add_argument('--save', type=str, default='experiments/cnf')
 parser.add_argument('--tint',type = float, default = 0.02)
 parser.add_argument('--finalT',type = float, default = 0.5)
-args = parser.parse_args()
 
 
 # %%
+args = parser.parse_args()
+
 learning_rate = args.lr  # learning rate for training neural network
 batch_size = args.batch_size  # batch size during training of neural network
 epochs = args.niters   # Number of training epochs for the neural network
@@ -44,6 +46,7 @@ tint = args.tint #  put more points in the initial training
 T = args.finalT    # Forward simulation time in the forward SDE
 dataset = args.data # Dataset choice, see toy_data for full options of toy datasets ('checkerboard','8gaussians','2spirals','swissroll','moons',etc.)
 saveloc = args.save # save folder
+
 
 # %% [markdown]
 # Load preconditioning map
@@ -84,71 +87,32 @@ class cosineact(nn.Module):
     def forward(self,input):
         evaluation = torch.cos(self.weights * input)
         return evaluation
+    
+
 
 # %%
 ## Score Model construction
+def construct_score_model(depth,hidden_units):
+    chain = []
+    chain.append(nn.Linear(3,int(hidden_units),bias =True))
+    chain.append(cosineact())
 
-class DenoisingModel(nn.Module):
-    
-    def __init__(self, hidden_units=32):
-        super(DenoisingModel, self).__init__()
-        # hidden_units = 32
-        
-        # data and timestep
-        self.fc1 = nn.Linear(3, int(hidden_units), bias=True)
-        nn.init.xavier_uniform_(self.fc1.weight)
-        self.activation1 = cosineact()
-        self.fc2 = nn.Linear(int(hidden_units), int(hidden_units), bias=True)
-        nn.init.xavier_uniform_(self.fc2.weight)
-        self.activation2 = nn.GELU()
-        self.fc3 = nn.Linear(int(hidden_units), 3, bias=True)
-        nn.init.xavier_uniform_(self.fc3.weight)
-        self.activation3 = nn.GELU()
-        
-        self.fc4 = nn.Linear(3, int(hidden_units), bias=True)
-        nn.init.xavier_uniform_(self.fc4.weight)
-        self.activation4 = nn.GELU()
-        self.fc5 = nn.Linear(int(hidden_units), int(hidden_units), bias=True)
-        nn.init.xavier_uniform_(self.fc5.weight)
-        self.activation5 = nn.GELU()
-        self.fc6 = nn.Linear(int(hidden_units), 3, bias=True)
-        nn.init.xavier_uniform_(self.fc6.weight)
-        self.activation6 = nn.GELU()
-        
-        self.fc7 = nn.Linear(3, int(hidden_units), bias=True)
-        nn.init.xavier_uniform_(self.fc7.weight)
-        self.activation7 = nn.GELU()
-        self.fc8 = nn.Linear(int(hidden_units), int(hidden_units), bias=True)
-        nn.init.xavier_uniform_(self.fc8.weight)
-        self.activation8 = nn.GELU()
-        self.fc9 = nn.Linear(int(hidden_units), 2, bias=True)
-        nn.init.xavier_uniform_(self.fc9.weight)
-        
-        
-    def forward(self, x):
-        x = self.fc1(x)
-        x = self.activation1(x)
-        x = self.fc2(x)
-        x = self.activation2(x)
-        x = self.fc3(x)
-        x = self.activation3(x)
-        x = self.fc4(x)
-        x = self.activation4(x)
-        x = self.fc5(x)
-        x = self.activation5(x)
-        x = self.fc6(x)
-        x = self.activation6(x)
-        x = self.fc7(x)
-        x = self.activation7(x)
-        x = self.fc8(x)
-        x = self.activation8(x)
-        x = self.fc9(x)
-        
-        return x
+    for ii in range(depth-1):
+        chain.append(nn.Linear(int(hidden_units),int(hidden_units),bias = True))
+        chain.append(nn.GELU())
+    chain.append(nn.Linear(int(hidden_units),2,bias = True))    
+
+    return nn.Sequential(*chain)
+
+
+
       
-scorenet = DenoisingModel()
+scorenet = construct_score_model(args.depth,args.hiddenunits)
 print(scorenet)
 optimizer = optim.Adam(scorenet.parameters(), lr=learning_rate)
+
+# %%
+
 
 # %% [markdown]
 # Define loss functions. These loss functions assume that the forward process is a standard OU process dx = -x/2 dt + dW. The choice of \lambda(t) in the SGM objective function is equal to 1 (the constant in front of the dW term). 
@@ -217,7 +181,8 @@ for step in range(epochs):
     # sample toy_data
     p_samples = toy_data.inf_train_gen(dataset, batch_size = batch_size)
     samples = torch.tensor(p_samples).to(dtype = torch.float32)
-    samples = model(samples,None,reverse=False)
+
+    samples = model(samples,None,reverse = False) 
 
     half = int(batch_size/2)
     samples1 = samples[0:half,:]
@@ -247,7 +212,7 @@ def ou_dynamics(init, T):
     init = init * torch.exp(- 0.5 * T) + torch.sqrt(1-torch.exp(-T)) * torch.randn_like(init)
     return init
 
-def reverse_sde(score, init,T,lr=0.001):
+def reverse_sde(score, init,T,lr=0.0005):
     step = int(T/lr) 
     for i in range(step,-1,-1):
         current_lr = lr
@@ -259,7 +224,7 @@ def reverse_sde(score, init,T,lr=0.001):
 
 # The following is the deterministic ODE flow that can also sample from the target distribution
 
-def reverse_ode_flow(score,init,T,lr = 0.001):
+def reverse_ode_flow(score,init,T,lr = 0.0005):
     step = int(T/lr)
     for i in range(step,-1,-1):
         current_lr = lr
@@ -297,7 +262,7 @@ samples_deterministic_target = model(torch.tensor(samples_deterministic),None,re
 # Make and save plots
 
 # %%
-savedir = saveloc + '/' + dataset + '_depth3_tapsgm/'
+savedir = saveloc + '/' + dataset + '_precdepth3_scoredepth' + str(args.depth)+ 'timeT0p' + str(args.finalT *100 )+'_tapsgm/'
 
 # Check whether the specified path exists or not
 isExist = os.path.exists(savedir)
@@ -336,13 +301,30 @@ savename = savedir + 'true_pushforward.png'
 plt.savefig(savename)
 
 
-plt.clf()
-pushforward_samples_true = model(samples_true,None,reverse = False).detach().numpy()
-pushforward_samples_atT = ou_dynamics(torch.tensor(pushforward_samples_true),torch.tensor(T)).detach().numpy()
-plt.scatter(pushforward_samples_atT[:,0],pushforward_samples_atT[:,1],s = 0.1)
-plt.axis('square')
-plt.title('True pushforward samples at T')
+# plt.clf()
+# pushforward_samples_true = model(samples_true,None,reverse = False).detach().numpy()
+# pushforward_samples_atT = ou_dynamics(torch.tensor(pushforward_samples_true),torch.tensor(T)).detach().numpy()
+# plt.scatter(pushforward_samples_atT[:,0],pushforward_samples_atT[:,1],s = 0.1)
+# plt.axis('square')
+# plt.title('True pushforward samples at T')
 
+# savename = savedir + 'true_pushforward_atT.png'
+# plt.savefig(savename)
+
+plt.clf()
+
+fig,axs = plt.subplots(1,6)
+samples_nf = model(samples_true,None,reverse = False)
+
+for jj in range(6):
+
+    samples_nf_out = ou_dynamics(samples_nf,torch.tensor(T/6*jj)).detach().numpy()
+    axs[jj].set_box_aspect(1)
+    axs[jj].set_xlim([-6, 6])
+    axs[jj].set_ylim([-6, 6])
+    axs[jj].scatter(samples_nf_out[:,0],samples_nf_out[:,1],s = 0.1)
+
+# plt.title('True pushforward samples at T')
 savename = savedir + 'true_pushforward_atT.png'
 plt.savefig(savename)
 
@@ -369,7 +351,7 @@ plt.savefig(savename)
 
 
 plt.clf()
-plt.scatter(samples_lang_noisedtraining[:,0],samples_lang_noisedtraining[:,1],s = 0.1)
+plt.scatter(samples_lang_noisedtraining_target[:,0],samples_lang_noisedtraining_target[:,1],s = 0.1)
 plt.axis('square')
 plt.title('Denoising noised training samples')
 savename = savedir + 'reversesde_noisedtraining_target.png'
@@ -386,7 +368,7 @@ plt.savefig(savename)
 
 
 
-samples_nf = model(torch.randn(1000,2),None,reverse = True).detach().numpy()
+samples_nf = model(torch.randn(10000,2),None,reverse = True).detach().numpy()
 plt.clf()
 plt.scatter(samples_nf[:,0],samples_nf[:,1],s = 0.1)
 plt.axis('square')
@@ -395,8 +377,10 @@ savename = savedir + 'map_only.png'
 plt.savefig(savename)
 
 
+
 savename = savedir + 'scorenet'
 torch.save(scorenet,savename)
+
 
 # %%
 
