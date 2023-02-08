@@ -1,0 +1,29 @@
+#!/bin/bash
+#SBATCH -c 4  # Number of Cores per Task
+#SBATCH --mem=8192  # Requested Memory
+#SBATCH -p cpu  # Partition
+#SBATCH -t 24:00:00  # Job time limit
+#SBATCH -o slurm-ffjord.out  # %j = job ID
+
+module load miniconda
+conda activate generativetmula 
+
+python train_toy.py --data moons --dims 4-4-4 --layer_type concatsquash --save experiments/ffjord/moons4
+python train_toy.py --data moons --dims 8-8-8 --layer_type concatsquash --save experiments/ffjord/moons8
+python train_toy.py --data moons --dims 64-64-64 --layer_type concatsquash --save experiments/ffjord/moons64
+
+
+python train_toy.py --data 8gaussians --dims 4-4-4 --layer_type concatsquash --save experiments/ffjord/8gaussians4
+python train_toy.py --data 8gaussians --dims 8-8-8 --layer_type concatsquash --save experiments/ffjord/8gaussians8
+python train_toy.py --data 8gaussians --dims 64-64-64 --layer_type concatsquash --save experiments/ffjord/8gaussians64
+
+
+python train_toy.py --data checkerboard --dims 4-4-4 --layer_type concatsquash --save experiments/ffjord/checkerboard4
+python train_toy.py --data checkerboard --dims 8-8-8 --layer_type concatsquash --save experiments/ffjord/checkerboard8
+python train_toy.py --data checkerboard --dims 64-64-64 --layer_type concatsquash --save experiments/ffjord/checkerboard64
+
+
+python train_toy.py --data pinwheel --dims 4-4-4 --layer_type concatsquash --save experiments/ffjord/pinwheel4
+python train_toy.py --data pinwheel --dims 8-8-8 --layer_type concatsquash --save experiments/ffjord/pinwheel8
+python train_toy.py --data pinwheel --dims 64-64-64 --layer_type concatsquash --save experiments/ffjord/pinwheel64
+
