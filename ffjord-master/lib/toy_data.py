@@ -52,7 +52,7 @@ def inf_train_gen(data, rng=None, batch_size=200):
         return X.astype("float32")
 
     elif data == "moons":
-        data = sklearn.datasets.make_moons(n_samples=batch_size, noise=0.1)[0]
+        data = sklearn.datasets.make_moons(n_samples=batch_size, noise=0.01)[0]
         data = data.astype("float32")
         data = data * 2 + np.array([-1, -0.2])
         return data

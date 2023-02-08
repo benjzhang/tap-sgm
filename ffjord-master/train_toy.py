@@ -69,7 +69,7 @@ parser.add_argument('--JdiagFrobint', type=float, default=None, help="int_t ||df
 parser.add_argument('--JoffdiagFrobint', type=float, default=None, help="int_t ||df/dx - df_i/dx_i||_F")
 
 parser.add_argument('--save', type=str, default='experiments/cnf')
-parser.add_argument('--viz_freq', type=int, default=100)
+parser.add_argument('--viz_freq', type=int, default=1000)
 parser.add_argument('--val_freq', type=int, default=100)
 parser.add_argument('--log_freq', type=int, default=10)
 parser.add_argument('--gpu', type=int, default=0)
@@ -217,6 +217,17 @@ if __name__ == '__main__':
                 fig_filename = os.path.join(args.save, 'figs', '{:04d}.jpg'.format(itr))
                 utils.makedirs(os.path.dirname(fig_filename))
                 plt.savefig(fig_filename)
+
+                ## Pushforward distribution
+
+                pushforward_samps = model(torch.tensor(p_samples).to(dtype=torch.float32),None,reverse = False).detach().numpy()
+                plt.clf()
+                plt.grid(False)
+                plt.scatter(pushforward_samps[:,0],pushforward_samps[:,1],s = 0.1)
+                plt.axis('square')
+                fig_filename_pushforward = os.path.join(args.save,'figs','pushforward{:04d}.jpg'.format(itr))
+                plt.savefig(fig_filename_pushforward)
+
                 plt.close()
                 model.train()
 
