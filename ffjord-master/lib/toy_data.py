@@ -58,7 +58,7 @@ def inf_train_gen(data, rng=None, batch_size=200):
         return data
 
     elif data == "8gaussians":
-        scale = 4.
+        scale = 20. 
         centers = [(1, 0), (-1, 0), (0, 1), (0, -1), (1. / np.sqrt(2), 1. / np.sqrt(2)),
                    (1. / np.sqrt(2), -1. / np.sqrt(2)), (-1. / np.sqrt(2),
                                                          1. / np.sqrt(2)), (-1. / np.sqrt(2), -1. / np.sqrt(2))]

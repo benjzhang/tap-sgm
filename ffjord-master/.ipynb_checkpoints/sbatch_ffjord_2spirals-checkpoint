@@ -8,8 +8,9 @@
 module load miniconda
 conda activate generativetmula 
 
-python train_toy.py --data 2spirals --dims 8-8-8 --layer_type concatsquash --save experiments/ffjord/2spirals
-python train_toy.py --data 2spirals --dims 16-16-16 --layer_type concatsquash --save experiments/ffjord/2spirals
-python train_toy.py --data 2spirals --dims 32-32-32 --layer_type concatsquash --save experiments/ffjord/2spirals
-python train_toy.py --data 2spirals --dims 64-64-64 --layer_type concatsquash --save experiments/ffjord/2spirals
+python train_toy.py --data 2spirals --dims 4-4-4 --layer_type concatsquash --save experiments/ffjord/2spirals4
+python train_toy.py --data 2spirals --dims 8-8-8 --layer_type concatsquash --save experiments/ffjord/2spirals8
+python train_toy.py --data 2spirals --dims 16-16-16 --layer_type concatsquash --save experiments/ffjord/2spirals16
+python train_toy.py --data 2spirals --dims 32-32-32 --layer_type concatsquash --save experiments/ffjord/2spirals32
+python train_toy.py --data 2spirals --dims 64-64-64 --layer_type concatsquash --save experiments/ffjord/2spirals64
 
