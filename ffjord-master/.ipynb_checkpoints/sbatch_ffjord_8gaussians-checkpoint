@@ -1,0 +1,15 @@
+#!/bin/bash
+#SBATCH -c 4  # Number of Cores per Task
+#SBATCH --mem=8192  # Requested Memory
+#SBATCH -p cpu  # Partition
+#SBATCH -t 24:00:00  # Job time limit
+#SBATCH -o slurm-ffjord_8gassians.out  # %j = job ID
+
+module load miniconda
+conda activate generativetmula 
+
+python train_toy.py --data 8gaussians --dims 8-8-8 --layer_type concatsquash --save experiments/ffjord/8gaussians8
+python train_toy.py --data 8gaussians --dims 16-16-16 --layer_type concatsquash --save experiments/ffjord/8gaussians16
+python train_toy.py --data 8gaussians --dims 32-32-32 --layer_type concatsquash --save experiments/ffjord/8gaussians32
+python train_toy.py --data 8gaussians --dims 64-64-64 --layer_type concatsquash --save experiments/ffjord/8gaussians64
+

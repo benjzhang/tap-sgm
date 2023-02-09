@@ -1,0 +1,15 @@
+#!/bin/bash
+#SBATCH -c 4  # Number of Cores per Task
+#SBATCH --mem=8192  # Requested Memory
+#SBATCH -p cpu  # Partition
+#SBATCH -t 24:00:00  # Job time limit
+#SBATCH -o slurm-ffjord_2spirals.out  # %j = job ID
+
+module load miniconda
+conda activate generativetmula 
+
+python train_toy.py --data 2spirals --dims 8-8-8 --layer_type concatsquash --save experiments/ffjord/2spirals
+python train_toy.py --data 2spirals --dims 16-16-16 --layer_type concatsquash --save experiments/ffjord/2spirals
+python train_toy.py --data 2spirals --dims 32-32-32 --layer_type concatsquash --save experiments/ffjord/2spirals
+python train_toy.py --data 2spirals --dims 64-64-64 --layer_type concatsquash --save experiments/ffjord/2spirals
+
