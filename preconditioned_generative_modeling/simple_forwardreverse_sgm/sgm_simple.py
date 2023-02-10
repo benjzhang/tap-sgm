@@ -29,7 +29,7 @@ parser.add_argument('--save',type = str,default = 'experiments/simple_sgm/')
 # Basic parameters
 
 # %%
-args = parser.parse_args('')
+args = parser.parse_args()
 
 learning_rate = args.lr # learning rate for training neural network
 batch_size = args.batch_size  # batch size during training of neural network
