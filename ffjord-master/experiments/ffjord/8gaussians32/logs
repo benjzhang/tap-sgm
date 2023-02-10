@@ -10383,3 +10383,5 @@ Iter 9998 | Time 0.4558(0.5416) | Loss 2.892978(3.100639) | NFE Forward 158(169.
 Iter 9999 | Time 0.5995(0.5457) | Loss 3.010506(3.094330) | NFE Forward 164(169.0) | NFE Backward 98(82.3) | CNF Time 0.5000(0.5000)
 Iter 10000 | Time 0.4901(0.5418) | Loss 3.006738(3.088198) | NFE Forward 152(167.8) | NFE Backward 74(81.7) | CNF Time 0.5000(0.5000)
 [TEST] Iter 10000 | Test Loss 3.110123 | NFE 188
+Training has finished.
+Plotting trajectory to experiments/ffjord/8gaussians32/trajectory
