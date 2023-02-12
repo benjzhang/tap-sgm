@@ -517,6 +517,6 @@ plt.savefig(savename)
 
 
 # %%
-torch.save(scorenet,savename + 'scorenet')
+torch.save(scorenet,savdir + 'scorenet')
 
 
