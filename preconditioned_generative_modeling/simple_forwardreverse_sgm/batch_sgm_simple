@@ -8,8 +8,26 @@
 module load miniconda
 conda activate generativetmula
 
-python sgm_simple.py --data moons 
-python sgm_simple.py --data 8gaussians 
-python sgm_simple.py --data checkerboard 
-python sgm_simple.py --data pinwheel 
-python sgm_simple.py --data 2spirals 
+python sgm_simple.py --data moons --finalT 3
+python sgm_simple.py --data 8gaussians --finalT 5
+python sgm_simple.py --data checkerboard --finalT 3
+python sgm_simple.py --data pinwheel --finalT 1
+python sgm_simple.py --data 2spirals --finalT 2
+
+python sgm_simple.py --data moons --depth 1 --finalT 3
+python sgm_simple.py --data 8gaussians --depth 1 --finalT 5
+python sgm_simple.py --data checkerboard --depth 1 --finalT 3
+python sgm_simple.py --data pinwheel --depth 1 --finalT 1
+python sgm_simple.py --data 2spirals --depth 1 --finalT 2
+
+python sgm_simple.py --data moons --depth 3 --finalT 3
+python sgm_simple.py --data 8gaussians --depth 3 --finalT 5
+python sgm_simple.py --data checkerboard --depth 3 --finalT 3
+python sgm_simple.py --data pinwheel --depth 3 --finalT 1
+python sgm_simple.py --data 2spirals --depth 3 --finalT 2
+
+python sgm_simple.py --data moons --depth 5 --finalT 3
+python sgm_simple.py --data 8gaussians --depth 5 --finalT 5
+python sgm_simple.py --data checkerboard --depth 5 --finalT 3
+python sgm_simple.py --data pinwheel --depth 5 --finalT 1
+python sgm_simple.py --data 2spirals --depth 5 --finalT 2
