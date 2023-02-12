@@ -1,0 +1,70 @@
+#!/bin/bash
+#SBATCH -c 4  # Number of Cores per Task
+#SBATCH --mem=8192  # Requested Memory
+#SBATCH -p cpu  # Partition
+#SBATCH -t 24:00:00  # Job time limit
+#SBATCH -o slurm-moons-ffjord-sgm.out  # %j = job ID
+
+module load miniconda
+conda activate generativetmula
+
+
+python ffjord_sgm.py --data moons --depth 1 --dims 64 
+python ffjord_sgm.py --data moons --depth 3 --dims 64 
+python ffjord_sgm.py --data moons --depth 5 --dims 64 
+python ffjord_sgm.py --data moons --depth 7 --dims 64 
+
+
+python ffjord_sgm.py --data moons --depth 1 --dims 32 
+python ffjord_sgm.py --data moons --depth 3 --dims 32 
+python ffjord_sgm.py --data moons --depth 5 --dims 32 
+python ffjord_sgm.py --data moons --depth 7 --dims 32 
+
+python ffjord_sgm.py --data moons --depth 1 --dims 16 
+python ffjord_sgm.py --data moons --depth 3 --dims 16 
+python ffjord_sgm.py --data moons --depth 5 --dims 16 
+python ffjord_sgm.py --data moons --depth 7 --dims 16 
+
+python ffjord_sgm.py --data moons --depth 1 --dims 8 
+python ffjord_sgm.py --data moons --depth 3 --dims 8 
+python ffjord_sgm.py --data moons --depth 5 --dims 8 
+python ffjord_sgm.py --data moons --depth 7 --dims 8 
+
+python ffjord_sgm.py --data moons --depth 1 --dims 4
+python ffjord_sgm.py --data moons --depth 3 --dims 4 
+python ffjord_sgm.py --data moons --depth 5 --dims 4 
+python ffjord_sgm.py --data moons --depth 7 --dims 4 
+
+
+
+
+
+python ffjord_sgm.py --data moons --depth 1 --dims 64 --rff True
+python ffjord_sgm.py --data moons --depth 3 --dims 64 --rff True
+python ffjord_sgm.py --data moons --depth 5 --dims 64 --rff True
+python ffjord_sgm.py --data moons --depth 7 --dims 64 --rff True
+
+
+python ffjord_sgm.py --data moons --depth 1 --dims 32 --rff True
+python ffjord_sgm.py --data moons --depth 3 --dims 32 --rff True
+python ffjord_sgm.py --data moons --depth 5 --dims 32 --rff True
+python ffjord_sgm.py --data moons --depth 7 --dims 32 --rff True
+
+python ffjord_sgm.py --data moons --depth 1 --dims 16 --rff True
+python ffjord_sgm.py --data moons --depth 3 --dims 16 --rff True
+python ffjord_sgm.py --data moons --depth 5 --dims 16 --rff True
+python ffjord_sgm.py --data moons --depth 7 --dims 16 --rff True
+
+python ffjord_sgm.py --data moons --depth 1 --dims 8 --rff True
+python ffjord_sgm.py --data moons --depth 3 --dims 8 --rff True
+python ffjord_sgm.py --data moons --depth 5 --dims 8 --rff True
+python ffjord_sgm.py --data moons --depth 7 --dims 8 --rff True
+
+python ffjord_sgm.py --data moons --depth 1 --dims 4 --rff True
+python ffjord_sgm.py --data moons --depth 3 --dims 4 --rff True
+python ffjord_sgm.py --data moons --depth 5 --dims 4 --rff True
+python ffjord_sgm.py --data moons --depth 7 --dims 4 --rff True
+
+
+
+

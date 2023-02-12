@@ -46,7 +46,7 @@ parser.add_argument('--gpu', type=int, default=0)
 
 
 # %%
-args = parser.parse_args('')
+args = parser.parse_args()
 
 
 learning_rate = args.lr  # learning rate for training neural network
@@ -230,7 +230,9 @@ def deterministic_time_dsm_score_estimator(scorenet,samples,t):
 
 # %%
 ## Generate training data
-p_samples = toy_data.inf_train_gen(dataset, batch_size =1000000)
+dataset_size = 1000000
+
+p_samples = toy_data.inf_train_gen(dataset, batch_size =dataset_size)
 training_samples = torch.tensor(p_samples).to(dtype = torch.float32)
 training_samples = model(training_samples,None,reverse = False).detach()
 
@@ -241,8 +243,8 @@ training_samples = model(training_samples,None,reverse = False).detach()
 if args.rff:
     for step in range(epochs):
 
-            randind1 = torch.randint(0,10000,(128,))
-            randind2 = torch.randint(0,10000,(128,))
+            randind1 = torch.randint(0,dataset_size,(128,))
+            randind2 = torch.randint(0,dataset_size,(128,))
             samples1 = training_samples[randind1,:]
             samples2 = training_samples[randind2,:]
 
@@ -262,8 +264,8 @@ if args.rff:
 else:
     for step in range(epochs):
 
-        randind1 = torch.randint(0,10000,(128,))
-        randind2 = torch.randint(0,10000,(128,))
+        randind1 = torch.randint(0,dataset_size,(128,))
+        randind2 = torch.randint(0,dataset_size,(128,))
         samples1 = training_samples[randind1,:]
         samples2 = training_samples[randind2,:]
 
@@ -517,6 +519,6 @@ plt.savefig(savename)
 
 
 # %%
-torch.save(scorenet,savdir + 'scorenet')
+torch.save(scorenet,savedir + 'scorenet')
 
 
