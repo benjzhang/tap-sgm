@@ -37,8 +37,8 @@ parser.add_argument('--lr', type=float, default=1e-3)
 parser.add_argument('--save', type=str, default='experiments/ffjord')
 parser.add_argument('--tint',type = float, default = 0.05)
 parser.add_argument('--finalT',type = float, default = 0.5)
-parser.add_argument('--rff',type = bool, default = False)
 parser.add_argument('--dt',type = float,default = 0.001)
+parser.add_argument('--rff',type = bool, default = False)
 parser.add_argument('--gpu', type=int, default=0)
 
 
