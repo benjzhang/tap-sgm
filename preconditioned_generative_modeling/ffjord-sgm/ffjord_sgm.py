@@ -401,9 +401,9 @@ samples_deterministic_target = model(torch.tensor(samples_deterministic),None,re
 
 # %%
 if args.rff:
-    savedir = saveloc + '/' + dataset +'_dims' + str(args.dims) + '_scoredepth' + str(args.depth)+ '_T' + str(args.finalT) +'_FF/'
+    savedir = saveloc + '/' + dataset +'_dims' + str(args.dims) + '_scoredepth' + str(args.depth)+ '_T' + str(args.finalT)  + '_tint' + str(args.tint)+'_FF/'
 else:
-    savedir = saveloc + '/' + dataset +'_dims' + str(args.dims) + '_scoredepth' + str(args.depth)+ '_T' + str(args.finalT) + '/'
+    savedir = saveloc + '/' + dataset +'_dims' + str(args.dims) + '_scoredepth' + str(args.depth)+ '_T' + str(args.finalT) + '_tint' + str(args.tint)+ '/'
 
 # Check whether the specified path exists or not
 isExist = os.path.exists(savedir)
