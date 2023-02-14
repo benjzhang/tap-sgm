@@ -1,0 +1,79 @@
+#!/bin/bash
+#SBATCH -c 4  # Number of Cores per Task
+#SBATCH --mem=8192  # Requested Memory
+#SBATCH -p cpu  # Partition
+#SBATCH -t 24:00:00  # Job time limit
+#SBATCH -o slurm-2spirals-ffjord-sgm.out  # %j = job ID
+
+module load miniconda
+conda activate generativetmula
+
+
+python ffjord_sgm.py --data 2spirals --depth 1 --dims 2 --tint 0.02 --finalT 0.2 --dt 0.0004
+python ffjord_sgm.py --data 2spirals --depth 3 --dims 2 --tint 0.02 --finalT 0.2 --dt 0.0004
+python ffjord_sgm.py --data 2spirals --depth 5 --dims 2 --tint 0.02 --finalT 0.2 --dt 0.0004
+python ffjord_sgm.py --data 2spirals --depth 7 --dims 2 --tint 0.02 --finalT 0.2 --dt 0.0004
+
+python ffjord_sgm.py --data 2spirals --depth 1 --dims 2 --tint 0.02 --finalT 0.2 --dt 0.0004 --rff True
+python ffjord_sgm.py --data 2spirals --depth 3 --dims 2 --tint 0.02 --finalT 0.2 --dt 0.0004 --rff True 
+python ffjord_sgm.py --data 2spirals --depth 5 --dims 2 --tint 0.02 --finalT 0.2 --dt 0.0004 --rff True
+python ffjord_sgm.py --data 2spirals --depth 7 --dims 2 --tint 0.02 --finalT 0.2 --dt 0.0004 --rff True
+
+
+
+python ffjord_sgm.py --data 8gaussians --depth 1 --dims 2 --tint 0.05 --finalT 0.5 --dt 0.001
+python ffjord_sgm.py --data 8gaussians --depth 3 --dims 2 --tint 0.05 --finalT 0.5 --dt 0.001
+python ffjord_sgm.py --data 8gaussians --depth 5 --dims 2 --tint 0.05 --finalT 0.5 --dt 0.001
+python ffjord_sgm.py --data 8gaussians --depth 7 --dims 2 --tint 0.05 --finalT 0.5 --dt 0.001
+
+python ffjord_sgm.py --data 8gaussians --depth 1 --dims 2 --tint 0.05 --finalT 0.5 --dt 0.001 --rff True
+python ffjord_sgm.py --data 8gaussians --depth 3 --dims 2 --tint 0.05 --finalT 0.5 --dt 0.001 --rff True 
+python ffjord_sgm.py --data 8gaussians --depth 5 --dims 2 --tint 0.05 --finalT 0.5 --dt 0.001 --rff True
+python ffjord_sgm.py --data 8gaussians --depth 7 --dims 2 --tint 0.05 --finalT 0.5 --dt 0.001 --rff True
+
+
+
+python ffjord_sgm.py --data checkerboard --depth 1 --dims 2 --tint 0.03 --finalT 0.3 --dt 0.0006
+python ffjord_sgm.py --data checkerboard --depth 3 --dims 2 --tint 0.03 --finalT 0.3 --dt 0.0006
+python ffjord_sgm.py --data checkerboard --depth 5 --dims 2 --tint 0.03 --finalT 0.3 --dt 0.0006
+python ffjord_sgm.py --data checkerboard --depth 7 --dims 2 --tint 0.03 --finalT 0.3 --dt 0.0006
+
+python ffjord_sgm.py --data checkerboard --depth 1 --dims 2 --tint 0.03 --finalT 0.3 --dt 0.0006 --rff True
+python ffjord_sgm.py --data checkerboard --depth 3 --dims 2 --tint 0.03 --finalT 0.3 --dt 0.0006 --rff True 
+python ffjord_sgm.py --data checkerboard --depth 5 --dims 2 --tint 0.03 --finalT 0.3 --dt 0.0006 --rff True
+python ffjord_sgm.py --data checkerboard --depth 7 --dims 2 --tint 0.03 --finalT 0.3 --dt 0.0006 --rff True
+
+
+
+python ffjord_sgm.py --data moons --depth 1 --dims 2 --tint 0.03 --finalT 0.3 --dt 0.0006
+python ffjord_sgm.py --data moons --depth 3 --dims 2 --tint 0.03 --finalT 0.3 --dt 0.0006
+python ffjord_sgm.py --data moons --depth 5 --dims 2 --tint 0.03 --finalT 0.3 --dt 0.0006
+python ffjord_sgm.py --data moons --depth 7 --dims 2 --tint 0.03 --finalT 0.3 --dt 0.0006
+
+python ffjord_sgm.py --data moons --depth 1 --dims 2 --tint 0.03 --finalT 0.3 --dt 0.0006 --rff True
+python ffjord_sgm.py --data moons --depth 3 --dims 2 --tint 0.03 --finalT 0.3 --dt 0.0006 --rff True 
+python ffjord_sgm.py --data moons --depth 5 --dims 2 --tint 0.03 --finalT 0.3 --dt 0.0006 --rff True
+python ffjord_sgm.py --data moons --depth 7 --dims 2 --tint 0.03 --finalT 0.3 --dt 0.0006 --rff True
+
+
+
+
+python ffjord_sgm.py --data pinwheel --depth 1 --dims 2 --tint 0.01 --finalT 0.1 --dt 0.0001
+python ffjord_sgm.py --data pinwheel --depth 3 --dims 2 --tint 0.01 --finalT 0.1 --dt 0.0001
+python ffjord_sgm.py --data pinwheel --depth 5 --dims 2 --tint 0.01 --finalT 0.1 --dt 0.0001
+python ffjord_sgm.py --data pinwheel --depth 7 --dims 2 --tint 0.01 --finalT 0.1 --dt 0.0001
+
+python ffjord_sgm.py --data pinwheel --depth 1 --dims 2 --tint 0.01 --finalT 0.1 --dt 0.0001 --rff True
+python ffjord_sgm.py --data pinwheel --depth 3 --dims 2 --tint 0.01 --finalT 0.1 --dt 0.0001 --rff True 
+python ffjord_sgm.py --data pinwheel --depth 5 --dims 2 --tint 0.01 --finalT 0.1 --dt 0.0001 --rff True
+python ffjord_sgm.py --data pinwheel --depth 7 --dims 2 --tint 0.01 --finalT 0.1 --dt 0.0001 --rff True
+
+
+
+
+
+
+
+
+
+
