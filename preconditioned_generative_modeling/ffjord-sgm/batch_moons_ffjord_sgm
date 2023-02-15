@@ -9,58 +9,58 @@ module load miniconda
 conda activate generativetmula
 
 
-python ffjord_sgm.py --data moons --depth 1 --dims 64 --tint 0.006 --finalT 0.3 --dt 0.0003
-python ffjord_sgm.py --data moons --depth 3 --dims 64 --tint 0.006 --finalT 0.3 --dt 0.0003
-python ffjord_sgm.py --data moons --depth 5 --dims 64 --tint 0.006 --finalT 0.3 --dt 0.0003
-python ffjord_sgm.py --data moons --depth 7 --dims 64 --tint 0.006 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 1 --dims 64 --tint 0.015 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 3 --dims 64 --tint 0.015 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 5 --dims 64 --tint 0.015 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 7 --dims 64 --tint 0.015 --finalT 0.3 --dt 0.0003
 
-python ffjord_sgm.py --data moons --depth 1 --dims 32 --tint 0.006 --finalT 0.3 --dt 0.0003
-python ffjord_sgm.py --data moons --depth 3 --dims 32 --tint 0.006 --finalT 0.3 --dt 0.0003
-python ffjord_sgm.py --data moons --depth 5 --dims 32 --tint 0.006 --finalT 0.3 --dt 0.0003
-python ffjord_sgm.py --data moons --depth 7 --dims 32 --tint 0.006 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 1 --dims 32 --tint 0.015 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 3 --dims 32 --tint 0.015 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 5 --dims 32 --tint 0.015 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 7 --dims 32 --tint 0.015 --finalT 0.3 --dt 0.0003
 
-python ffjord_sgm.py --data moons --depth 1 --dims 16 --tint 0.006 --finalT 0.3 --dt 0.0003
-python ffjord_sgm.py --data moons --depth 3 --dims 16 --tint 0.006 --finalT 0.3 --dt 0.0003
-python ffjord_sgm.py --data moons --depth 5 --dims 16 --tint 0.006 --finalT 0.3 --dt 0.0003
-python ffjord_sgm.py --data moons --depth 7 --dims 16 --tint 0.006 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 1 --dims 16 --tint 0.015 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 3 --dims 16 --tint 0.015 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 5 --dims 16 --tint 0.015 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 7 --dims 16 --tint 0.015 --finalT 0.3 --dt 0.0003
 
-python ffjord_sgm.py --data moons --depth 1 --dims 8 --tint 0.006 --finalT 0.3 --dt 0.0003
-python ffjord_sgm.py --data moons --depth 3 --dims 8 --tint 0.006 --finalT 0.3 --dt 0.0003
-python ffjord_sgm.py --data moons --depth 5 --dims 8 --tint 0.006 --finalT 0.3 --dt 0.0003
-python ffjord_sgm.py --data moons --depth 7 --dims 8 --tint 0.006 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 1 --dims 8 --tint 0.015 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 3 --dims 8 --tint 0.015 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 5 --dims 8 --tint 0.015 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 7 --dims 8 --tint 0.015 --finalT 0.3 --dt 0.0003
 
-python ffjord_sgm.py --data moons --depth 1 --dims 4 --tint 0.006 --finalT 0.3 --dt 0.0003
-python ffjord_sgm.py --data moons --depth 3 --dims 4 --tint 0.006 --finalT 0.3 --dt 0.0003
-python ffjord_sgm.py --data moons --depth 5 --dims 4 --tint 0.006 --finalT 0.3 --dt 0.0003
-python ffjord_sgm.py --data moons --depth 7 --dims 4 --tint 0.006 --finalT 0.3 --dt 0.0003
-
-
+python ffjord_sgm.py --data moons --depth 1 --dims 4 --tint 0.015 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 3 --dims 4 --tint 0.015 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 5 --dims 4 --tint 0.015 --finalT 0.3 --dt 0.0003
+python ffjord_sgm.py --data moons --depth 7 --dims 4 --tint 0.015 --finalT 0.3 --dt 0.0003
 
 
-python ffjord_sgm.py --data moons --depth 1 --dims 64 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True
-python ffjord_sgm.py --data moons --depth 3 --dims 64 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True
-python ffjord_sgm.py --data moons --depth 5 --dims 64 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True
-python ffjord_sgm.py --data moons --depth 7 --dims 64 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True
 
-python ffjord_sgm.py --data moons --depth 1 --dims 32 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True
-python ffjord_sgm.py --data moons --depth 3 --dims 32 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True
-python ffjord_sgm.py --data moons --depth 5 --dims 32 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True
-python ffjord_sgm.py --data moons --depth 7 --dims 32 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True 
 
-python ffjord_sgm.py --data moons --depth 1 --dims 16 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True
-python ffjord_sgm.py --data moons --depth 3 --dims 16 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True
-python ffjord_sgm.py --data moons --depth 5 --dims 16 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True
-python ffjord_sgm.py --data moons --depth 7 --dims 16 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True
+python ffjord_sgm.py --data moons --depth 1 --dims 64 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True
+python ffjord_sgm.py --data moons --depth 3 --dims 64 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True
+python ffjord_sgm.py --data moons --depth 5 --dims 64 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True
+python ffjord_sgm.py --data moons --depth 7 --dims 64 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True
 
-python ffjord_sgm.py --data moons --depth 1 --dims 8 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True
-python ffjord_sgm.py --data moons --depth 3 --dims 8 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True
-python ffjord_sgm.py --data moons --depth 5 --dims 8 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True
-python ffjord_sgm.py --data moons --depth 7 --dims 8 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True
+python ffjord_sgm.py --data moons --depth 1 --dims 32 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True
+python ffjord_sgm.py --data moons --depth 3 --dims 32 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True
+python ffjord_sgm.py --data moons --depth 5 --dims 32 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True
+python ffjord_sgm.py --data moons --depth 7 --dims 32 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True 
 
-python ffjord_sgm.py --data moons --depth 1 --dims 4 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True
-python ffjord_sgm.py --data moons --depth 3 --dims 4 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True 
-python ffjord_sgm.py --data moons --depth 5 --dims 4 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True
-python ffjord_sgm.py --data moons --depth 7 --dims 4 --tint 0.006 --finalT 0.3 --dt 0.0003 --rff True
+python ffjord_sgm.py --data moons --depth 1 --dims 16 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True
+python ffjord_sgm.py --data moons --depth 3 --dims 16 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True
+python ffjord_sgm.py --data moons --depth 5 --dims 16 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True
+python ffjord_sgm.py --data moons --depth 7 --dims 16 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True
+
+python ffjord_sgm.py --data moons --depth 1 --dims 8 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True
+python ffjord_sgm.py --data moons --depth 3 --dims 8 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True
+python ffjord_sgm.py --data moons --depth 5 --dims 8 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True
+python ffjord_sgm.py --data moons --depth 7 --dims 8 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True
+
+python ffjord_sgm.py --data moons --depth 1 --dims 4 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True
+python ffjord_sgm.py --data moons --depth 3 --dims 4 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True 
+python ffjord_sgm.py --data moons --depth 5 --dims 4 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True
+python ffjord_sgm.py --data moons --depth 7 --dims 4 --tint 0.015 --finalT 0.3 --dt 0.0003 --rff True
 
 
 
