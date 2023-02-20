@@ -12680,3 +12680,527 @@ Iter 10000 | Time 0.4353(0.4608) | Loss 3.220395(3.295132) | NFE Forward 122(126
 [TEST] Iter 10000 | Test Loss 3.296860 | NFE 134
 Training has finished.
 Plotting trajectory to experiments/ffjord/8gaussians4/trajectory
+/work/bjzhang_umass_edu/generative_tmula/ffjord-master/train_toy.py
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+import argparse
+import os
+import time
+
+import torch
+import torch.optim as optim
+
+import lib.toy_data as toy_data
+import lib.utils as utils
+from lib.visualize_flow import visualize_transform
+import lib.layers.odefunc as odefunc
+
+from train_misc import standard_normal_logprob
+from train_misc import set_cnf_options, count_nfe, count_parameters, count_total_time
+from train_misc import add_spectral_norm, spectral_norm_power_iteration
+from train_misc import create_regularization_fns, get_regularization, append_regularization_to_log
+from train_misc import build_model_tabular
+
+from diagnostics.viz_toy import save_trajectory, trajectory_to_video
+
+SOLVERS = ["dopri5", "bdf", "rk4", "midpoint", 'adams', 'explicit_adams', 'fixed_adams']
+parser = argparse.ArgumentParser('Continuous Normalizing Flow')
+parser.add_argument(
+    '--data', choices=['swissroll', '8gaussians', 'pinwheel', 'circles', 'moons', '2spirals', 'checkerboard', 'rings'],
+    type=str, default='pinwheel'
+)
+parser.add_argument(
+    "--layer_type", type=str, default="concatsquash",
+    choices=["ignore", "concat", "concat_v2", "squash", "concatsquash", "concatcoord", "hyper", "blend"]
+)
+parser.add_argument('--dims', type=str, default='64-64-64')
+parser.add_argument("--num_blocks", type=int, default=1, help='Number of stacked CNFs.')
+parser.add_argument('--time_length', type=float, default=0.5)
+parser.add_argument('--train_T', type=eval, default=True)
+parser.add_argument("--divergence_fn", type=str, default="brute_force", choices=["brute_force", "approximate"])
+parser.add_argument("--nonlinearity", type=str, default="tanh", choices=odefunc.NONLINEARITIES)
+
+parser.add_argument('--solver', type=str, default='dopri5', choices=SOLVERS)
+parser.add_argument('--atol', type=float, default=1e-5)
+parser.add_argument('--rtol', type=float, default=1e-5)
+parser.add_argument("--step_size", type=float, default=None, help="Optional fixed step size.")
+
+parser.add_argument('--test_solver', type=str, default=None, choices=SOLVERS + [None])
+parser.add_argument('--test_atol', type=float, default=None)
+parser.add_argument('--test_rtol', type=float, default=None)
+
+parser.add_argument('--residual', type=eval, default=False, choices=[True, False])
+parser.add_argument('--rademacher', type=eval, default=False, choices=[True, False])
+parser.add_argument('--spectral_norm', type=eval, default=False, choices=[True, False])
+parser.add_argument('--batch_norm', type=eval, default=False, choices=[True, False])
+parser.add_argument('--bn_lag', type=float, default=0)
+
+parser.add_argument('--niters', type=int, default=10000)
+parser.add_argument('--batch_size', type=int, default=100)
+parser.add_argument('--test_batch_size', type=int, default=1000)
+parser.add_argument('--lr', type=float, default=1e-3)
+parser.add_argument('--weight_decay', type=float, default=1e-5)
+
+# Track quantities
+parser.add_argument('--l1int', type=float, default=None, help="int_t ||f||_1")
+parser.add_argument('--l2int', type=float, default=None, help="int_t ||f||_2")
+parser.add_argument('--dl2int', type=float, default=None, help="int_t ||f^T df/dt||_2")
+parser.add_argument('--JFrobint', type=float, default=None, help="int_t ||df/dx||_F")
+parser.add_argument('--JdiagFrobint', type=float, default=None, help="int_t ||df_i/dx_i||_F")
+parser.add_argument('--JoffdiagFrobint', type=float, default=None, help="int_t ||df/dx - df_i/dx_i||_F")
+
+parser.add_argument('--save', type=str, default='experiments/cnf')
+parser.add_argument('--viz_freq', type=int, default=1000)
+parser.add_argument('--val_freq', type=int, default=100)
+parser.add_argument('--log_freq', type=int, default=10)
+parser.add_argument('--gpu', type=int, default=0)
+args = parser.parse_args()
+
+# logger
+utils.makedirs(args.save)
+logger = utils.get_logger(logpath=os.path.join(args.save, 'logs'), filepath=os.path.abspath(__file__))
+
+if args.layer_type == "blend":
+    logger.info("!! Setting time_length from None to 1.0 due to use of Blend layers.")
+    args.time_length = 1.0
+
+logger.info(args)
+
+device = torch.device('cuda:' + str(args.gpu) if torch.cuda.is_available() else 'cpu')
+
+
+def get_transforms(model):
+
+    def sample_fn(z, logpz=None):
+        if logpz is not None:
+            return model(z, logpz, reverse=True)
+        else:
+            return model(z, reverse=True)
+
+    def density_fn(x, logpx=None):
+        if logpx is not None:
+            return model(x, logpx, reverse=False)
+        else:
+            return model(x, reverse=False)
+
+    return sample_fn, density_fn
+
+
+def compute_loss(args, model, batch_size=None):
+    if batch_size is None: batch_size = args.batch_size
+
+    # load data
+    x = toy_data.inf_train_gen(args.data, batch_size=batch_size)
+    x = torch.from_numpy(x).type(torch.float32).to(device)
+    zero = torch.zeros(x.shape[0], 1).to(x)
+
+    # transform to z
+    z, delta_logp = model(x, zero)
+
+    # compute log q(z)
+    logpz = standard_normal_logprob(z).sum(1, keepdim=True)
+
+    logpx = logpz - delta_logp
+    loss = -torch.mean(logpx)
+    return loss
+
+
+if __name__ == '__main__':
+
+    regularization_fns, regularization_coeffs = create_regularization_fns(args)
+    model = build_model_tabular(args, 2, regularization_fns).to(device)
+    if args.spectral_norm: add_spectral_norm(model)
+    set_cnf_options(args, model)
+
+    logger.info(model)
+    logger.info("Number of trainable parameters: {}".format(count_parameters(model)))
+
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    time_meter = utils.RunningAverageMeter(0.93)
+    loss_meter = utils.RunningAverageMeter(0.93)
+    nfef_meter = utils.RunningAverageMeter(0.93)
+    nfeb_meter = utils.RunningAverageMeter(0.93)
+    tt_meter = utils.RunningAverageMeter(0.93)
+
+    end = time.time()
+    best_loss = float('inf')
+    model.train()
+    for itr in range(1, args.niters + 1):
+        optimizer.zero_grad()
+        if args.spectral_norm: spectral_norm_power_iteration(model, 1)
+
+        loss = compute_loss(args, model)
+        loss_meter.update(loss.item())
+
+        if len(regularization_coeffs) > 0:
+            reg_states = get_regularization(model, regularization_coeffs)
+            reg_loss = sum(
+                reg_state * coeff for reg_state, coeff in zip(reg_states, regularization_coeffs) if coeff != 0
+            )
+            loss = loss + reg_loss
+
+        total_time = count_total_time(model)
+        nfe_forward = count_nfe(model)
+
+        loss.backward()
+        optimizer.step()
+
+        nfe_total = count_nfe(model)
+        nfe_backward = nfe_total - nfe_forward
+        nfef_meter.update(nfe_forward)
+        nfeb_meter.update(nfe_backward)
+
+        time_meter.update(time.time() - end)
+        tt_meter.update(total_time)
+
+        log_message = (
+            'Iter {:04d} | Time {:.4f}({:.4f}) | Loss {:.6f}({:.6f}) | NFE Forward {:.0f}({:.1f})'
+            ' | NFE Backward {:.0f}({:.1f}) | CNF Time {:.4f}({:.4f})'.format(
+                itr, time_meter.val, time_meter.avg, loss_meter.val, loss_meter.avg, nfef_meter.val, nfef_meter.avg,
+                nfeb_meter.val, nfeb_meter.avg, tt_meter.val, tt_meter.avg
+            )
+        )
+        if len(regularization_coeffs) > 0:
+            log_message = append_regularization_to_log(log_message, regularization_fns, reg_states)
+
+        logger.info(log_message)
+
+        if itr % args.val_freq == 0 or itr == args.niters:
+            with torch.no_grad():
+                model.eval()
+                test_loss = compute_loss(args, model, batch_size=args.test_batch_size)
+                test_nfe = count_nfe(model)
+                log_message = '[TEST] Iter {:04d} | Test Loss {:.6f} | NFE {:.0f}'.format(itr, test_loss, test_nfe)
+                logger.info(log_message)
+
+                if test_loss.item() < best_loss:
+                    best_loss = test_loss.item()
+                    utils.makedirs(args.save)
+                    torch.save({
+                        'args': args,
+                        'state_dict': model.state_dict(),
+                    }, os.path.join(args.save, 'checkpt.pth'))
+                model.train()
+
+        if itr % args.viz_freq == 0:
+            with torch.no_grad():
+                model.eval()
+                p_samples = toy_data.inf_train_gen(args.data, batch_size=2000)
+
+                sample_fn, density_fn = get_transforms(model)
+
+                plt.figure(figsize=(9, 3))
+                visualize_transform(
+                    p_samples, torch.randn, standard_normal_logprob, transform=sample_fn, inverse_transform=density_fn,
+                    samples=True, npts=800, device=device
+                )
+                fig_filename = os.path.join(args.save, 'figs', '{:04d}.jpg'.format(itr))
+                utils.makedirs(os.path.dirname(fig_filename))
+                plt.savefig(fig_filename)
+
+                ## Pushforward distribution
+
+                pushforward_samps = model(torch.tensor(p_samples).to(dtype=torch.float32),None,reverse = False).detach().numpy()
+                plt.clf()
+                plt.grid(False)
+                plt.scatter(pushforward_samps[:,0],pushforward_samps[:,1],s = 0.1)
+                plt.axis('square')
+                fig_filename_pushforward = os.path.join(args.save,'figs','pushforward{:04d}.jpg'.format(itr))
+                plt.savefig(fig_filename_pushforward)
+
+                plt.close()
+                model.train()
+
+        end = time.time()
+
+    logger.info('Training has finished.')
+
+    save_traj_dir = os.path.join(args.save, 'trajectory')
+    logger.info('Plotting trajectory to {}'.format(save_traj_dir))
+    data_samples = toy_data.inf_train_gen(args.data, batch_size=2000)
+    save_trajectory(model, data_samples, save_traj_dir, device=device)
+    trajectory_to_video(save_traj_dir)
+
+Namespace(data='8gaussians', layer_type='concatsquash', dims='4-4-4', num_blocks=1, time_length=0.5, train_T=True, divergence_fn='brute_force', nonlinearity='tanh', solver='dopri5', atol=1e-05, rtol=1e-05, step_size=None, test_solver=None, test_atol=None, test_rtol=None, residual=False, rademacher=False, spectral_norm=False, batch_norm=False, bn_lag=0, niters=10000, batch_size=100, test_batch_size=1000, lr=0.001, weight_decay=1e-05, l1int=None, l2int=None, dl2int=None, JFrobint=None, JdiagFrobint=None, JoffdiagFrobint=None, save='experiments/ffjord/8gaussians4', viz_freq=1000, val_freq=100, log_freq=10, gpu=0)
+SequentialFlow(
+  (chain): ModuleList(
+    (0): CNF(
+      (odefunc): RegularizedODEfunc(
+        (odefunc): ODEfunc(
+          (diffeq): ODEnet(
+            (layers): ModuleList(
+              (0): ConcatSquashLinear(
+                (_layer): Linear(in_features=2, out_features=4, bias=True)
+                (_hyper_bias): Linear(in_features=1, out_features=4, bias=False)
+                (_hyper_gate): Linear(in_features=1, out_features=4, bias=True)
+              )
+              (1): ConcatSquashLinear(
+                (_layer): Linear(in_features=4, out_features=4, bias=True)
+                (_hyper_bias): Linear(in_features=1, out_features=4, bias=False)
+                (_hyper_gate): Linear(in_features=1, out_features=4, bias=True)
+              )
+              (2): ConcatSquashLinear(
+                (_layer): Linear(in_features=4, out_features=4, bias=True)
+                (_hyper_bias): Linear(in_features=1, out_features=4, bias=False)
+                (_hyper_gate): Linear(in_features=1, out_features=4, bias=True)
+              )
+              (3): ConcatSquashLinear(
+                (_layer): Linear(in_features=4, out_features=2, bias=True)
+                (_hyper_bias): Linear(in_features=1, out_features=2, bias=False)
+                (_hyper_gate): Linear(in_features=1, out_features=2, bias=True)
+              )
+            )
+            (activation_fns): ModuleList(
+              (0): Tanh()
+              (1): Tanh()
+              (2): Tanh()
+            )
+          )
+        )
+      )
+    )
+  )
+)
+Number of trainable parameters: 105
+Iter 0001 | Time 0.3766(0.3766) | Loss 102.373016(102.373016) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0002 | Time 0.1279(0.3592) | Loss 101.741478(102.328809) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0003 | Time 0.1289(0.3431) | Loss 102.586777(102.346866) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0004 | Time 0.1281(0.3280) | Loss 101.499313(102.287538) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0005 | Time 0.1276(0.3140) | Loss 102.606270(102.309849) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0006 | Time 0.1294(0.3011) | Loss 101.325676(102.240957) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0007 | Time 0.1284(0.2890) | Loss 102.190392(102.237417) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0008 | Time 0.1282(0.2777) | Loss 102.015060(102.221852) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0009 | Time 0.1378(0.2679) | Loss 102.421852(102.235852) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0010 | Time 0.1307(0.2583) | Loss 101.429649(102.179418) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0011 | Time 0.1297(0.2493) | Loss 102.490028(102.201161) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0012 | Time 0.1032(0.2391) | Loss 101.889084(102.179315) | NFE Forward 14(14.0) | NFE Backward 14(19.6) | CNF Time 0.5000(0.5000)
+Iter 0013 | Time 0.1298(0.2315) | Loss 102.046150(102.169994) | NFE Forward 14(14.0) | NFE Backward 20(19.6) | CNF Time 0.5000(0.5000)
+Iter 0014 | Time 0.1286(0.2243) | Loss 103.615852(102.271204) | NFE Forward 14(14.0) | NFE Backward 20(19.6) | CNF Time 0.5000(0.5000)
+Iter 0015 | Time 0.1314(0.2178) | Loss 100.963028(102.179632) | NFE Forward 14(14.0) | NFE Backward 20(19.7) | CNF Time 0.5000(0.5000)
+Iter 0016 | Time 0.1016(0.2096) | Loss 102.455223(102.198923) | NFE Forward 14(14.0) | NFE Backward 14(19.3) | CNF Time 0.5000(0.5000)
+Iter 0017 | Time 0.1291(0.2040) | Loss 101.453972(102.146776) | NFE Forward 14(14.0) | NFE Backward 20(19.3) | CNF Time 0.5000(0.5000)
+Iter 0018 | Time 0.1301(0.1988) | Loss 101.716949(102.116689) | NFE Forward 14(14.0) | NFE Backward 20(19.4) | CNF Time 0.5000(0.5000)
+Iter 0019 | Time 0.1287(0.1939) | Loss 102.336426(102.132070) | NFE Forward 14(14.0) | NFE Backward 20(19.4) | CNF Time 0.5000(0.5000)
+Iter 0020 | Time 0.1291(0.1894) | Loss 101.045540(102.056013) | NFE Forward 14(14.0) | NFE Backward 20(19.5) | CNF Time 0.5000(0.5000)
+Iter 0021 | Time 0.1299(0.1852) | Loss 102.120644(102.060537) | NFE Forward 14(14.0) | NFE Backward 20(19.5) | CNF Time 0.5000(0.5000)
+Iter 0022 | Time 0.1294(0.1813) | Loss 102.484177(102.090192) | NFE Forward 14(14.0) | NFE Backward 20(19.5) | CNF Time 0.5000(0.5000)
+Iter 0023 | Time 0.1297(0.1777) | Loss 101.473343(102.047013) | NFE Forward 14(14.0) | NFE Backward 20(19.6) | CNF Time 0.5000(0.5000)
+Iter 0024 | Time 0.1299(0.1743) | Loss 102.038673(102.046429) | NFE Forward 14(14.0) | NFE Backward 20(19.6) | CNF Time 0.5000(0.5000)
+Iter 0025 | Time 0.1297(0.1712) | Loss 101.888802(102.035395) | NFE Forward 14(14.0) | NFE Backward 20(19.6) | CNF Time 0.5000(0.5000)
+Iter 0026 | Time 0.1297(0.1683) | Loss 101.862396(102.023285) | NFE Forward 14(14.0) | NFE Backward 20(19.6) | CNF Time 0.5000(0.5000)
+Iter 0027 | Time 0.1298(0.1656) | Loss 102.872200(102.082709) | NFE Forward 14(14.0) | NFE Backward 20(19.7) | CNF Time 0.5000(0.5000)
+Iter 0028 | Time 0.1301(0.1631) | Loss 102.073128(102.082038) | NFE Forward 14(14.0) | NFE Backward 20(19.7) | CNF Time 0.5000(0.5000)
+Iter 0029 | Time 0.1295(0.1608) | Loss 102.293213(102.096821) | NFE Forward 14(14.0) | NFE Backward 20(19.7) | CNF Time 0.5000(0.5000)
+Iter 0030 | Time 0.1364(0.1591) | Loss 101.883759(102.081906) | NFE Forward 14(14.0) | NFE Backward 20(19.7) | CNF Time 0.5000(0.5000)
+Iter 0031 | Time 0.1306(0.1571) | Loss 101.629486(102.050237) | NFE Forward 14(14.0) | NFE Backward 20(19.8) | CNF Time 0.5000(0.5000)
+Iter 0032 | Time 0.1293(0.1551) | Loss 101.975899(102.045033) | NFE Forward 14(14.0) | NFE Backward 20(19.8) | CNF Time 0.5000(0.5000)
+Iter 0033 | Time 0.1025(0.1514) | Loss 102.633202(102.086205) | NFE Forward 14(14.0) | NFE Backward 14(19.4) | CNF Time 0.5000(0.5000)
+Iter 0034 | Time 0.1300(0.1499) | Loss 101.571747(102.050193) | NFE Forward 14(14.0) | NFE Backward 20(19.4) | CNF Time 0.5000(0.5000)
+Iter 0035 | Time 0.1291(0.1485) | Loss 101.853958(102.036456) | NFE Forward 14(14.0) | NFE Backward 20(19.5) | CNF Time 0.5000(0.5000)
+Iter 0036 | Time 0.1307(0.1472) | Loss 100.945602(101.960097) | NFE Forward 14(14.0) | NFE Backward 20(19.5) | CNF Time 0.5000(0.5000)
+Iter 0037 | Time 0.1300(0.1460) | Loss 102.258202(101.980964) | NFE Forward 14(14.0) | NFE Backward 20(19.5) | CNF Time 0.5000(0.5000)
+Iter 0038 | Time 0.1294(0.1449) | Loss 101.259354(101.930451) | NFE Forward 14(14.0) | NFE Backward 20(19.6) | CNF Time 0.5000(0.5000)
+Iter 0039 | Time 0.1299(0.1438) | Loss 101.425148(101.895080) | NFE Forward 14(14.0) | NFE Backward 20(19.6) | CNF Time 0.5000(0.5000)
+Iter 0040 | Time 0.1308(0.1429) | Loss 101.214211(101.847419) | NFE Forward 14(14.0) | NFE Backward 20(19.6) | CNF Time 0.5000(0.5000)
+Iter 0041 | Time 0.1288(0.1419) | Loss 101.551659(101.826716) | NFE Forward 14(14.0) | NFE Backward 20(19.6) | CNF Time 0.5000(0.5000)
+Iter 0042 | Time 0.1300(0.1411) | Loss 102.796356(101.894591) | NFE Forward 14(14.0) | NFE Backward 20(19.7) | CNF Time 0.5000(0.5000)
+Iter 0043 | Time 0.1306(0.1404) | Loss 102.459320(101.934122) | NFE Forward 14(14.0) | NFE Backward 20(19.7) | CNF Time 0.5000(0.5000)
+Iter 0044 | Time 0.1293(0.1396) | Loss 101.481308(101.902425) | NFE Forward 14(14.0) | NFE Backward 20(19.7) | CNF Time 0.5000(0.5000)
+Iter 0045 | Time 0.1301(0.1389) | Loss 102.324608(101.931978) | NFE Forward 14(14.0) | NFE Backward 20(19.7) | CNF Time 0.5000(0.5000)
+Iter 0046 | Time 0.1311(0.1384) | Loss 101.634354(101.911144) | NFE Forward 14(14.0) | NFE Backward 20(19.8) | CNF Time 0.5000(0.5000)
+Iter 0047 | Time 0.1289(0.1377) | Loss 101.864738(101.907896) | NFE Forward 14(14.0) | NFE Backward 20(19.8) | CNF Time 0.5000(0.5000)
+Iter 0048 | Time 0.1297(0.1371) | Loss 102.551582(101.952954) | NFE Forward 14(14.0) | NFE Backward 20(19.8) | CNF Time 0.5000(0.5000)
+Iter 0049 | Time 0.1313(0.1367) | Loss 101.339470(101.910010) | NFE Forward 14(14.0) | NFE Backward 20(19.8) | CNF Time 0.5000(0.5000)
+Iter 0050 | Time 0.1286(0.1362) | Loss 102.002693(101.916498) | NFE Forward 14(14.0) | NFE Backward 20(19.8) | CNF Time 0.5000(0.5000)
+Iter 0051 | Time 0.1297(0.1357) | Loss 101.996239(101.922080) | NFE Forward 14(14.0) | NFE Backward 20(19.8) | CNF Time 0.5000(0.5000)
+Iter 0052 | Time 0.1312(0.1354) | Loss 103.278030(102.016996) | NFE Forward 14(14.0) | NFE Backward 20(19.8) | CNF Time 0.5000(0.5000)
+Iter 0053 | Time 0.1290(0.1350) | Loss 101.869980(102.006705) | NFE Forward 14(14.0) | NFE Backward 20(19.9) | CNF Time 0.5000(0.5000)
+Iter 0054 | Time 0.1300(0.1346) | Loss 102.249161(102.023677) | NFE Forward 14(14.0) | NFE Backward 20(19.9) | CNF Time 0.5000(0.5000)
+Iter 0055 | Time 0.1309(0.1344) | Loss 101.867653(102.012755) | NFE Forward 14(14.0) | NFE Backward 20(19.9) | CNF Time 0.5000(0.5000)
+Iter 0056 | Time 0.1075(0.1325) | Loss 101.354134(101.966652) | NFE Forward 14(14.0) | NFE Backward 14(19.5) | CNF Time 0.5000(0.5000)
+Iter 0057 | Time 0.1317(0.1324) | Loss 101.284767(101.918920) | NFE Forward 14(14.0) | NFE Backward 20(19.5) | CNF Time 0.5000(0.5000)
+Iter 0058 | Time 0.1315(0.1323) | Loss 101.723656(101.905251) | NFE Forward 14(14.0) | NFE Backward 20(19.5) | CNF Time 0.5000(0.5000)
+Iter 0059 | Time 0.1291(0.1321) | Loss 101.359024(101.867015) | NFE Forward 14(14.0) | NFE Backward 20(19.6) | CNF Time 0.5000(0.5000)
+Iter 0060 | Time 0.1306(0.1320) | Loss 101.756912(101.859308) | NFE Forward 14(14.0) | NFE Backward 20(19.6) | CNF Time 0.5000(0.5000)
+Iter 0061 | Time 0.1306(0.1319) | Loss 102.385803(101.896163) | NFE Forward 14(14.0) | NFE Backward 20(19.6) | CNF Time 0.5000(0.5000)
+Iter 0062 | Time 0.1291(0.1317) | Loss 102.025368(101.905207) | NFE Forward 14(14.0) | NFE Backward 20(19.7) | CNF Time 0.5000(0.5000)
+Iter 0063 | Time 0.1311(0.1317) | Loss 102.230194(101.927956) | NFE Forward 14(14.0) | NFE Backward 20(19.7) | CNF Time 0.5000(0.5000)
+Iter 0064 | Time 0.1312(0.1316) | Loss 102.686966(101.981087) | NFE Forward 14(14.0) | NFE Backward 20(19.7) | CNF Time 0.5000(0.5000)
+Iter 0065 | Time 0.1296(0.1315) | Loss 101.246681(101.929679) | NFE Forward 14(14.0) | NFE Backward 20(19.7) | CNF Time 0.5000(0.5000)
+Iter 0066 | Time 0.1310(0.1315) | Loss 101.952751(101.931294) | NFE Forward 14(14.0) | NFE Backward 20(19.7) | CNF Time 0.5000(0.5000)
+Iter 0067 | Time 0.1310(0.1314) | Loss 101.530693(101.903252) | NFE Forward 14(14.0) | NFE Backward 20(19.8) | CNF Time 0.5000(0.5000)
+Iter 0068 | Time 0.1298(0.1313) | Loss 101.229065(101.856058) | NFE Forward 14(14.0) | NFE Backward 20(19.8) | CNF Time 0.5000(0.5000)
+Iter 0069 | Time 0.1307(0.1313) | Loss 100.829353(101.784189) | NFE Forward 14(14.0) | NFE Backward 20(19.8) | CNF Time 0.5000(0.5000)
+Iter 0070 | Time 0.1310(0.1313) | Loss 101.919281(101.793646) | NFE Forward 14(14.0) | NFE Backward 20(19.8) | CNF Time 0.5000(0.5000)
+Iter 0071 | Time 0.1293(0.1311) | Loss 101.382591(101.764872) | NFE Forward 14(14.0) | NFE Backward 20(19.8) | CNF Time 0.5000(0.5000)
+Iter 0072 | Time 0.1307(0.1311) | Loss 101.525253(101.748098) | NFE Forward 14(14.0) | NFE Backward 20(19.8) | CNF Time 0.5000(0.5000)
+Iter 0073 | Time 0.1308(0.1311) | Loss 101.834290(101.754132) | NFE Forward 14(14.0) | NFE Backward 20(19.8) | CNF Time 0.5000(0.5000)
+Iter 0074 | Time 0.1297(0.1310) | Loss 101.315544(101.723431) | NFE Forward 14(14.0) | NFE Backward 20(19.9) | CNF Time 0.5000(0.5000)
+Iter 0075 | Time 0.1305(0.1309) | Loss 101.717133(101.722990) | NFE Forward 14(14.0) | NFE Backward 20(19.9) | CNF Time 0.5000(0.5000)
+Iter 0076 | Time 0.1309(0.1309) | Loss 102.168167(101.754152) | NFE Forward 14(14.0) | NFE Backward 20(19.9) | CNF Time 0.5000(0.5000)
+Iter 0077 | Time 0.1300(0.1309) | Loss 101.895897(101.764074) | NFE Forward 14(14.0) | NFE Backward 20(19.9) | CNF Time 0.5000(0.5000)
+Iter 0078 | Time 0.1306(0.1308) | Loss 102.516937(101.816775) | NFE Forward 14(14.0) | NFE Backward 20(19.9) | CNF Time 0.5000(0.5000)
+Iter 0079 | Time 0.1310(0.1309) | Loss 101.714882(101.809642) | NFE Forward 14(14.0) | NFE Backward 20(19.9) | CNF Time 0.5000(0.5000)
+Iter 0080 | Time 0.1302(0.1308) | Loss 101.540077(101.790773) | NFE Forward 14(14.0) | NFE Backward 20(19.9) | CNF Time 0.5000(0.5000)
+Iter 0081 | Time 0.1306(0.1308) | Loss 102.220123(101.820827) | NFE Forward 14(14.0) | NFE Backward 20(19.9) | CNF Time 0.5000(0.5000)
+Iter 0082 | Time 0.1309(0.1308) | Loss 100.816582(101.750530) | NFE Forward 14(14.0) | NFE Backward 20(19.9) | CNF Time 0.5000(0.5000)
+Iter 0083 | Time 0.1306(0.1308) | Loss 102.214767(101.783027) | NFE Forward 14(14.0) | NFE Backward 20(19.9) | CNF Time 0.5000(0.5000)
+Iter 0084 | Time 0.1298(0.1307) | Loss 101.706932(101.777700) | NFE Forward 14(14.0) | NFE Backward 20(19.9) | CNF Time 0.5000(0.5000)
+Iter 0085 | Time 0.1306(0.1307) | Loss 101.652802(101.768957) | NFE Forward 14(14.0) | NFE Backward 20(19.9) | CNF Time 0.5000(0.5000)
+Iter 0086 | Time 0.1291(0.1306) | Loss 102.218849(101.800450) | NFE Forward 14(14.0) | NFE Backward 20(19.9) | CNF Time 0.5000(0.5000)
+Iter 0087 | Time 0.1290(0.1305) | Loss 101.966591(101.812079) | NFE Forward 14(14.0) | NFE Backward 20(19.9) | CNF Time 0.5000(0.5000)
+Iter 0088 | Time 0.1300(0.1305) | Loss 101.331505(101.778439) | NFE Forward 14(14.0) | NFE Backward 20(19.9) | CNF Time 0.5000(0.5000)
+Iter 0089 | Time 0.1288(0.1303) | Loss 101.149925(101.734443) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0090 | Time 0.1355(0.1307) | Loss 101.025909(101.684846) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0091 | Time 0.1302(0.1307) | Loss 101.430641(101.667052) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0092 | Time 0.1299(0.1306) | Loss 101.706833(101.669836) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0093 | Time 0.1309(0.1306) | Loss 102.588112(101.734116) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0094 | Time 0.1301(0.1306) | Loss 101.631622(101.726941) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0095 | Time 0.1310(0.1306) | Loss 101.991913(101.745489) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0096 | Time 0.1314(0.1307) | Loss 101.931946(101.758541) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0097 | Time 0.1307(0.1307) | Loss 101.437538(101.736071) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0098 | Time 0.1302(0.1306) | Loss 102.429802(101.784632) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0099 | Time 0.1305(0.1306) | Loss 101.706696(101.779176) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0100 | Time 0.1308(0.1306) | Loss 101.687004(101.772724) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+[TEST] Iter 0100 | Test Loss 101.596237 | NFE 14
+Iter 0101 | Time 0.1304(0.1306) | Loss 101.507050(101.754127) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0102 | Time 0.1301(0.1306) | Loss 100.872246(101.692395) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0103 | Time 0.1300(0.1305) | Loss 102.248886(101.731350) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0104 | Time 0.1297(0.1305) | Loss 101.734772(101.731589) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0105 | Time 0.1297(0.1304) | Loss 101.960068(101.747583) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0106 | Time 0.1288(0.1303) | Loss 101.259407(101.713411) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0107 | Time 0.1278(0.1301) | Loss 101.266953(101.682158) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0108 | Time 0.1284(0.1300) | Loss 101.618187(101.677680) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0109 | Time 0.1279(0.1299) | Loss 101.334862(101.653683) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0110 | Time 0.1296(0.1298) | Loss 101.454140(101.639715) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0111 | Time 0.1293(0.1298) | Loss 102.118584(101.673236) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0112 | Time 0.1290(0.1298) | Loss 100.921173(101.620592) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0113 | Time 0.1293(0.1297) | Loss 101.609840(101.619839) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0114 | Time 0.1299(0.1297) | Loss 101.690826(101.624808) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0115 | Time 0.1304(0.1298) | Loss 101.507263(101.616580) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0116 | Time 0.1301(0.1298) | Loss 101.638519(101.618116) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0117 | Time 0.1317(0.1299) | Loss 102.850967(101.704415) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0118 | Time 0.1303(0.1300) | Loss 101.866356(101.715751) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0119 | Time 0.1315(0.1301) | Loss 102.609833(101.778337) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0120 | Time 0.1308(0.1301) | Loss 100.881622(101.715567) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0121 | Time 0.1311(0.1302) | Loss 100.988625(101.664681) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0122 | Time 0.1313(0.1303) | Loss 100.829391(101.606211) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0123 | Time 0.1313(0.1303) | Loss 101.406219(101.592211) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0124 | Time 0.1299(0.1303) | Loss 100.890007(101.543057) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0125 | Time 0.1305(0.1303) | Loss 101.762344(101.558407) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0126 | Time 0.1292(0.1302) | Loss 101.783195(101.574142) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0127 | Time 0.1293(0.1302) | Loss 102.336533(101.627510) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0128 | Time 0.1299(0.1301) | Loss 101.362587(101.608965) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0129 | Time 0.1292(0.1301) | Loss 101.854958(101.626184) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0130 | Time 0.1291(0.1300) | Loss 100.919861(101.576742) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0131 | Time 0.1306(0.1300) | Loss 101.541824(101.574298) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0132 | Time 0.1295(0.1300) | Loss 101.619446(101.577458) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0133 | Time 0.1367(0.1305) | Loss 101.861603(101.597348) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0134 | Time 0.1324(0.1306) | Loss 101.502029(101.590676) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0135 | Time 0.1311(0.1307) | Loss 101.166603(101.560991) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0136 | Time 0.1305(0.1306) | Loss 100.727219(101.502627) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0137 | Time 0.1308(0.1307) | Loss 101.922234(101.531999) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0138 | Time 0.1313(0.1307) | Loss 101.626465(101.538612) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0139 | Time 0.1306(0.1307) | Loss 100.670723(101.477860) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0140 | Time 0.1315(0.1307) | Loss 101.092621(101.450893) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0141 | Time 0.1315(0.1308) | Loss 101.957672(101.486367) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0142 | Time 0.1311(0.1308) | Loss 101.263504(101.470767) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0143 | Time 0.1312(0.1308) | Loss 102.615791(101.550919) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0144 | Time 0.1312(0.1309) | Loss 102.264893(101.600897) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0145 | Time 0.1314(0.1309) | Loss 101.405174(101.587196) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0146 | Time 0.1309(0.1309) | Loss 100.629158(101.520134) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0147 | Time 0.1314(0.1309) | Loss 101.437996(101.514384) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0148 | Time 0.1311(0.1310) | Loss 101.373161(101.504498) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0149 | Time 0.1316(0.1310) | Loss 101.581848(101.509913) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0150 | Time 0.1305(0.1310) | Loss 101.327347(101.497133) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0151 | Time 0.1306(0.1309) | Loss 100.252434(101.410004) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0152 | Time 0.1313(0.1310) | Loss 100.951180(101.377887) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0153 | Time 0.1312(0.1310) | Loss 100.964745(101.348967) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0154 | Time 0.1298(0.1309) | Loss 101.473854(101.357709) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0155 | Time 0.1316(0.1310) | Loss 102.245331(101.419842) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0156 | Time 0.1312(0.1310) | Loss 100.797371(101.376269) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0157 | Time 0.1302(0.1309) | Loss 100.987907(101.349084) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0158 | Time 0.1312(0.1309) | Loss 101.989433(101.393908) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0159 | Time 0.1296(0.1308) | Loss 100.684326(101.344238) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0160 | Time 0.1305(0.1308) | Loss 101.531403(101.357339) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0161 | Time 0.1317(0.1309) | Loss 101.049423(101.335785) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0162 | Time 0.1306(0.1309) | Loss 101.615166(101.355342) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0163 | Time 0.1303(0.1308) | Loss 101.170059(101.342372) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0164 | Time 0.1312(0.1308) | Loss 101.873512(101.379552) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0165 | Time 0.1302(0.1308) | Loss 101.692589(101.401464) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0166 | Time 0.1309(0.1308) | Loss 101.259430(101.391522) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0167 | Time 0.1317(0.1309) | Loss 101.278877(101.383637) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0168 | Time 0.1308(0.1309) | Loss 100.322601(101.309364) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0169 | Time 0.1310(0.1309) | Loss 100.652596(101.263391) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0170 | Time 0.1316(0.1309) | Loss 100.896286(101.237693) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0171 | Time 0.1310(0.1309) | Loss 100.567696(101.190793) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0172 | Time 0.1308(0.1309) | Loss 100.306549(101.128896) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0173 | Time 0.1322(0.1310) | Loss 101.606056(101.162297) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0174 | Time 0.1321(0.1311) | Loss 101.037811(101.153583) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0175 | Time 0.1308(0.1311) | Loss 101.264801(101.161369) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0176 | Time 0.1321(0.1311) | Loss 99.871338(101.071067) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0177 | Time 0.1313(0.1312) | Loss 99.917343(100.990306) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0178 | Time 0.1300(0.1311) | Loss 100.854919(100.980829) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0179 | Time 0.1326(0.1312) | Loss 101.691231(101.030557) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0180 | Time 0.1315(0.1312) | Loss 101.103447(101.035659) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0181 | Time 0.1305(0.1312) | Loss 101.070168(101.038075) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0182 | Time 0.1323(0.1312) | Loss 100.405983(100.993828) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0183 | Time 0.1320(0.1313) | Loss 100.655334(100.970134) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0184 | Time 0.1307(0.1312) | Loss 101.430763(101.002378) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0185 | Time 0.1321(0.1313) | Loss 101.407166(101.030713) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0186 | Time 0.1324(0.1314) | Loss 101.081024(101.034235) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0187 | Time 0.1307(0.1313) | Loss 100.157471(100.972861) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0188 | Time 0.1318(0.1314) | Loss 101.196014(100.988482) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0189 | Time 0.1316(0.1314) | Loss 100.133743(100.928650) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0190 | Time 0.1381(0.1318) | Loss 100.341217(100.887530) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0191 | Time 0.1333(0.1319) | Loss 100.594376(100.867009) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0192 | Time 0.1310(0.1319) | Loss 100.796120(100.862047) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0193 | Time 0.1323(0.1319) | Loss 101.730316(100.922826) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0194 | Time 0.1325(0.1319) | Loss 100.192253(100.871686) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0195 | Time 0.1306(0.1319) | Loss 101.076317(100.886010) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0196 | Time 0.1318(0.1318) | Loss 100.501091(100.859066) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0197 | Time 0.1329(0.1319) | Loss 100.574181(100.839124) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0198 | Time 0.1308(0.1318) | Loss 100.759483(100.833549) | NFE Forward 14(14.0) | NFE Backward 20(20.0) | CNF Time 0.5000(0.5000)
+Iter 0199 | Time 0.1595(0.1338) | Loss 100.584656(100.816126) | NFE Forward 14(14.0) | NFE Backward 26(20.4) | CNF Time 0.5000(0.5000)
+Iter 0200 | Time 0.1329(0.1337) | Loss 100.764069(100.812482) | NFE Forward 14(14.0) | NFE Backward 20(20.4) | CNF Time 0.5000(0.5000)
+[TEST] Iter 0200 | Test Loss 100.440041 | NFE 14
+Iter 0201 | Time 0.1316(0.1336) | Loss 100.636169(100.800140) | NFE Forward 14(14.0) | NFE Backward 20(20.4) | CNF Time 0.5000(0.5000)
+Iter 0202 | Time 0.1313(0.1334) | Loss 100.161835(100.755459) | NFE Forward 14(14.0) | NFE Backward 20(20.3) | CNF Time 0.5000(0.5000)
+Iter 0203 | Time 0.1304(0.1332) | Loss 99.990654(100.701923) | NFE Forward 14(14.0) | NFE Backward 20(20.3) | CNF Time 0.5000(0.5000)
+Iter 0204 | Time 0.1313(0.1331) | Loss 100.531364(100.689984) | NFE Forward 14(14.0) | NFE Backward 20(20.3) | CNF Time 0.5000(0.5000)
+Iter 0205 | Time 0.1311(0.1329) | Loss 100.896637(100.704449) | NFE Forward 14(14.0) | NFE Backward 20(20.3) | CNF Time 0.5000(0.5000)
+Iter 0206 | Time 0.1299(0.1327) | Loss 101.360664(100.750384) | NFE Forward 14(14.0) | NFE Backward 20(20.3) | CNF Time 0.5000(0.5000)
+Iter 0207 | Time 0.1591(0.1346) | Loss 100.040062(100.700662) | NFE Forward 14(14.0) | NFE Backward 26(20.7) | CNF Time 0.5000(0.5000)
+Iter 0208 | Time 0.1572(0.1361) | Loss 100.270119(100.670524) | NFE Forward 14(14.0) | NFE Backward 26(21.0) | CNF Time 0.5000(0.5000)
+Iter 0209 | Time 0.1295(0.1357) | Loss 100.611397(100.666385) | NFE Forward 14(14.0) | NFE Backward 20(21.0) | CNF Time 0.5000(0.5000)
+Iter 0210 | Time 0.1586(0.1373) | Loss 99.652679(100.595425) | NFE Forward 14(14.0) | NFE Backward 26(21.3) | CNF Time 0.5000(0.5000)
+Iter 0211 | Time 0.1564(0.1386) | Loss 100.594139(100.595335) | NFE Forward 14(14.0) | NFE Backward 26(21.6) | CNF Time 0.5000(0.5000)
+Iter 0212 | Time 0.1599(0.1401) | Loss 100.015091(100.554718) | NFE Forward 14(14.0) | NFE Backward 26(21.9) | CNF Time 0.5000(0.5000)
+Iter 0213 | Time 0.1307(0.1395) | Loss 99.625114(100.489646) | NFE Forward 14(14.0) | NFE Backward 20(21.8) | CNF Time 0.5000(0.5000)
+Iter 0214 | Time 0.1576(0.1407) | Loss 99.317429(100.407591) | NFE Forward 14(14.0) | NFE Backward 26(22.1) | CNF Time 0.5000(0.5000)
+Iter 0215 | Time 0.1598(0.1421) | Loss 100.262566(100.397439) | NFE Forward 14(14.0) | NFE Backward 26(22.4) | CNF Time 0.5000(0.5000)
+Iter 0216 | Time 0.1309(0.1413) | Loss 101.240334(100.456442) | NFE Forward 14(14.0) | NFE Backward 20(22.2) | CNF Time 0.5000(0.5000)
+Iter 0217 | Time 0.1301(0.1405) | Loss 100.616325(100.467634) | NFE Forward 14(14.0) | NFE Backward 20(22.1) | CNF Time 0.5000(0.5000)
+Iter 0218 | Time 0.1598(0.1419) | Loss 99.678116(100.412367) | NFE Forward 14(14.0) | NFE Backward 26(22.3) | CNF Time 0.5000(0.5000)
+Iter 0219 | Time 0.1573(0.1429) | Loss 100.393509(100.411047) | NFE Forward 14(14.0) | NFE Backward 26(22.6) | CNF Time 0.5000(0.5000)
+Iter 0220 | Time 0.1583(0.1440) | Loss 100.328255(100.405252) | NFE Forward 14(14.0) | NFE Backward 26(22.8) | CNF Time 0.5000(0.5000)
+Iter 0221 | Time 0.1588(0.1450) | Loss 99.647713(100.352224) | NFE Forward 14(14.0) | NFE Backward 26(23.0) | CNF Time 0.5000(0.5000)
+Iter 0222 | Time 0.1595(0.1461) | Loss 100.149124(100.338007) | NFE Forward 14(14.0) | NFE Backward 26(23.3) | CNF Time 0.5000(0.5000)
+Iter 0223 | Time 0.1587(0.1469) | Loss 99.621155(100.287827) | NFE Forward 14(14.0) | NFE Backward 26(23.4) | CNF Time 0.5000(0.5000)
+Iter 0224 | Time 0.1600(0.1479) | Loss 99.567871(100.237430) | NFE Forward 14(14.0) | NFE Backward 26(23.6) | CNF Time 0.5000(0.5000)
+Iter 0225 | Time 0.1603(0.1487) | Loss 99.260994(100.169080) | NFE Forward 14(14.0) | NFE Backward 26(23.8) | CNF Time 0.5000(0.5000)
+Iter 0226 | Time 0.1588(0.1494) | Loss 100.726707(100.208114) | NFE Forward 14(14.0) | NFE Backward 26(23.9) | CNF Time 0.5000(0.5000)
+Iter 0227 | Time 0.1615(0.1503) | Loss 99.987961(100.192703) | NFE Forward 14(14.0) | NFE Backward 26(24.1) | CNF Time 0.5000(0.5000)
+Iter 0228 | Time 0.1597(0.1509) | Loss 100.696487(100.227968) | NFE Forward 14(14.0) | NFE Backward 26(24.2) | CNF Time 0.5000(0.5000)
+Iter 0229 | Time 0.1599(0.1516) | Loss 99.901947(100.205147) | NFE Forward 14(14.0) | NFE Backward 26(24.3) | CNF Time 0.5000(0.5000)
+Iter 0230 | Time 0.1599(0.1521) | Loss 99.492699(100.155275) | NFE Forward 14(14.0) | NFE Backward 26(24.5) | CNF Time 0.5000(0.5000)
+Iter 0231 | Time 0.1597(0.1527) | Loss 100.500175(100.179418) | NFE Forward 14(14.0) | NFE Backward 26(24.6) | CNF Time 0.5000(0.5000)
+Iter 0232 | Time 0.1593(0.1531) | Loss 100.384811(100.193796) | NFE Forward 14(14.0) | NFE Backward 26(24.7) | CNF Time 0.5000(0.5000)
+Iter 0233 | Time 0.1330(0.1517) | Loss 100.355568(100.205120) | NFE Forward 14(14.0) | NFE Backward 20(24.3) | CNF Time 0.5000(0.5000)
+Iter 0234 | Time 0.1605(0.1523) | Loss 99.060883(100.125023) | NFE Forward 14(14.0) | NFE Backward 26(24.5) | CNF Time 0.5000(0.5000)
+Iter 0235 | Time 0.1588(0.1528) | Loss 99.738152(100.097942) | NFE Forward 14(14.0) | NFE Backward 26(24.6) | CNF Time 0.5000(0.5000)
+Iter 0236 | Time 0.1602(0.1533) | Loss 99.497002(100.055876) | NFE Forward 14(14.0) | NFE Backward 26(24.7) | CNF Time 0.5000(0.5000)
+Iter 0237 | Time 0.1595(0.1537) | Loss 100.248108(100.069333) | NFE Forward 14(14.0) | NFE Backward 26(24.8) | CNF Time 0.5000(0.5000)

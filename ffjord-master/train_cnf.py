@@ -104,6 +104,8 @@ if args.layer_type == "blend":
 logger.info(args)
 
 
+
+
 def add_noise(x):
     """
     [0, 1] -> [0, 255] -> add noise -> [0, 1]
@@ -311,7 +313,7 @@ def create_model(args, data_shape, regularization_fns):
 
 
 if __name__ == "__main__":
-
+    print(torch.cuda.is_available())
     # get deivce
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     cvt = lambda x: x.type(torch.float32).to(device, non_blocking=True)
