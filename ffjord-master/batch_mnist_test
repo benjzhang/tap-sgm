@@ -1,0 +1,13 @@
+#!/bin/bash
+#SBATCH -c 4  # Number of Cores per Task
+#SBATCH --mem=8192  # Requested Memory
+#SBATCH -p gpu  # Partition
+#SBATCH -G 1  # Number of GPUs
+#SBATCH -t 24:00:00  # Job time limit
+#SBATCH -o slurm-%j.out  # %j = job ID
+
+
+
+module load miniconda
+conda activate generativetmula 
+python train_cnf.py --data mnist --dims 64,64,64 --strides 1,1,1,1 --num_blocks 2 --layer_type concat --multiscale True --rademacher True
