@@ -425,7 +425,7 @@ if __name__ == "__main__":
                         x = x.view(x.shape[0], -1)
                     x = cvt(x)
                     loss = compute_bits_per_dim(x, model)
-                    losses.append(loss)
+                    losses.append(loss.detach().cpu().clone().numpy())
 
                 loss = np.mean(losses)
                 logger.info("Epoch {:04d} | Time {:.4f}, Bit/dim {:.4f}".format(epoch, time.time() - start, loss))
