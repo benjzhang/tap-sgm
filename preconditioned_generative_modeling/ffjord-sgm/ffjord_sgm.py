@@ -520,5 +520,8 @@ plt.savefig(savename)
 
 # %%
 torch.save(scorenet,savedir + 'scorenet')
+if args.rff:
+    torch.save(B,savedir+'FF_B')
+    torch.save(c,savedir+'FF_c')
 
 
