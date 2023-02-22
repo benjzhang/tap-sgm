@@ -11,4 +11,4 @@
 source /modules/apps/miniconda/22.11.1-1/etc/profile.d/conda.sh
 conda activate tapsgm_gpu
 python gpu_test.py
-python train_cnf.py --data mnist --dims 64,64,64 --strides 1,1,1,1 --num_blocks 2 --layer_type concat --multiscale True --rademacher True
+python train_cnf.py --data mnist --dims 64,64,64 --strides 1,1,1,1 --num_blocks 2 --layer_type concat --multiscale True --rademacher True --save experiments/cnf/mnist_test
