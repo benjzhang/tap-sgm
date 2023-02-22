@@ -348,6 +348,45 @@ def FF_reverse_ode_flow(score,init,T,B,c,lr = args.dt):
         init = init + current_lr  * (init/2 + 1/2 *( - init +  score(evalpoint).detach()) )
     return init
 
+
+
+# Better corrector sampling
+
+def FF_reverse_sde_corrector(score, init,T,B,c,lr=args.dt):
+    step = int(T/lr) 
+    for i in range(step,0,-1):
+        current_lr = lr
+
+
+        FFinit = torch.matmul(init,B) + c
+        # checkbounds = (torch.abs(init[:,0])<3).type(torch.uint8) * (torch.abs(init[:,1])<3)
+        # FFinit = torch.multiply( checkbounds.reshape(-1,1) , torch.cos(FFinit) )
+        FFinit = torch.cos(FFinit) 
+        # FFinit = torch.cat( (torch.cos(FFinit), torch.sin(FFinit)),1 )
+        evalpoint = torch.cat(((torch.tensor(lr*i)).repeat(FFinit.shape[0],1),FFinit),1)
+
+
+        init = init + current_lr  * (init/2 +( -init + score(evalpoint).detach() ))
+        init = init + torch.randn_like(init) * np.sqrt(current_lr)
+        for jj in range(1):
+            FFinit = torch.cos(torch.matmul(init,B) + c)
+            evalpoint = torch.cat(((torch.tensor(lr*(i-1))).repeat(FFinit.shape[0],1),FFinit),1)
+            init = init + current_lr * (init/2 + (-init + score(evalpoint).detach()))
+
+        if i == 1:
+            for jj  in range(100):
+                FFinit = torch.cos(torch.matmul(init,B) + c)
+                evalpoint = torch.cat(((torch.tensor(lr*(i-1))).repeat(FFinit.shape[0],1),FFinit),1)
+                init = init + current_lr * (init/2 + (-init + score(evalpoint).detach()))
+           
+
+
+    return init
+
+
+
+
+
 # %% [markdown]
 # Sample using the score network 
 
@@ -357,14 +396,14 @@ if args.rff:
     # Denoising the normal distribution 
     samples_lang = torch.randn(10000, 2) # * (right_bound - left_bound) + left_bound
     # samples_lang = reverse_sde(scorenet, samples_lang,torch.tensor(T)).detach().numpy()
-    samples_lang = FF_reverse_sde(scorenet, samples_lang,torch.tensor(T),B,c).detach().numpy()
+    samples_lang = FF_reverse_sde_corrector(scorenet, samples_lang,torch.tensor(T),B,c).detach().numpy()
 
     # Denoising samples from the training data
     samples = torch.tensor(toy_data.inf_train_gen(dataset, batch_size = 10000))
     samples = model(samples.to(dtype = torch.float32),None,reverse = False)
     samples_lang_noisedtraining = samples * torch.exp(-0.5 * torch.tensor(T)) + torch.sqrt(1-torch.exp(-torch.tensor(T))) * torch.randn_like(samples)
     # samples_lang_noisedtraining =reverse_sde(scorenet, samples_lang_noisedtraining.to(dtype=torch.float32),torch.tensor(T)).detach().numpy()
-    samples_lang_noisedtraining =FF_reverse_sde(scorenet, samples_lang_noisedtraining.to(dtype=torch.float32),torch.tensor(T),B,c).detach().numpy()
+    samples_lang_noisedtraining =FF_reverse_sde_corrector(scorenet, samples_lang_noisedtraining.to(dtype=torch.float32),torch.tensor(T),B,c).detach().numpy()
 
     # Deterministically evolving the normal distribution 
     samples_deterministic = torch.randn(10000,2)
