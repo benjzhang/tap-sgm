@@ -6,7 +6,8 @@
 #SBATCH -t 168:00:00  # Job time limit
 #SBATCH -o slurm-mnistsgm.out  # %j = job ID
 
-
+source /modules/apps/miniconda/22.11.1-1/etc/profile.d/conda.sh
+conda activate tapsgm_gpu
 
 
 python train_img.py  --saveroot=experiments/mnist --expname=mnistsgm_const \

@@ -125,6 +125,7 @@ gen_sde = PluginReverseSDE(inf_sde, drift_q, T, vtype=args.vtype, debias=args.de
 
 
 cuda = torch.cuda.is_available()
+print(cuda)
 if cuda:
     gen_sde.cuda()
 
