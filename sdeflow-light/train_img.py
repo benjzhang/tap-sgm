@@ -120,7 +120,7 @@ else:
 
 T = torch.nn.Parameter(torch.FloatTensor([args.T0]), requires_grad=False)
 
-inf_sde = VariancePreservingSDE(beta_min=1, beta_max=1, T=T)
+inf_sde = VariancePreservingSDE(beta_min=0.1, beta_max=20, T=T)
 gen_sde = PluginReverseSDE(inf_sde, drift_q, T, vtype=args.vtype, debias=args.debias)
 
 
