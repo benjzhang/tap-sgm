@@ -52,3 +52,7 @@
 2023-02-25 07:39:25.227084	Iteration 98000 	BPD 2.754849910736084
 2023-02-25 07:41:59.091613	Iteration 100000 	BPD 2.402189016342163
 2023-02-25 07:41:59.098352	Finished training
+2023-02-25 15:54:06.969769	folder path: experiments/mnist_longT/sde-flow/mnistsgm_const/mnist-True-False-128-0.0001-100000
+2023-02-25 15:54:06.972134	Namespace(dataset='mnist', dataroot='~/.datasets', saveroot='experiments/mnist_longT', expname='mnistsgm_const', print_every=2000, sample_every=2000, checkpoint_every=2000, num_steps=1000, T0=10.0, vtype='rademacher', batch_size=128, test_batch_size=256, lr=0.0001, num_iterations=100000, real=True, debias=False)
+2023-02-25 15:56:29.304345	Iteration 100000 	BPD 1.3378088474273682
+2023-02-25 15:56:29.312425	Finished training
