@@ -142,7 +142,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 ## Pushforward samples
 
 # %%
-loader = torch.utils.data.DataLoader(dataset,10)
+loader = torch.utils.data.DataLoader(dataset,60000)
 blah = enumerate(loader)
 a, (blah,b) = next(blah)
 
