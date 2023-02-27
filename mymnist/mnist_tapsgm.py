@@ -14,7 +14,7 @@ from models.unet import UNet
 
 
 
-loaded = torch.load('pushforward_samples')
+
 
 inputchannels = 1
 inputheight = 28
@@ -33,7 +33,8 @@ scorenet = UNet(input_channels = inputchannels,
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 scorenet = scorenet.to(device)
 
-
+loaded = torch.load('pushforward_samples')
+loaded = loaded.to(device)
 # %%
 # Train the scorenet
 

@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/work/bjzhang_umass_edu/generative_tmula/mymnist/mnist_tapsgm.py", line 18, in <module>
+    loaded = loaded.to(device)
+NameError: name 'device' is not defined

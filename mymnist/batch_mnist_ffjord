@@ -4,7 +4,7 @@
 #SBATCH -p gpu-long  # Partition
 #SBATCH -G 1  # Number of GPUs
 #SBATCH -t 168:00:00  # Job time limit
-#SBATCH -o slurm-ffjord-preprocess-mnist.out  # %j = job ID
+#SBATCH -o slurm-ffjord-mnist.out  # %j = job ID
 
 
 
