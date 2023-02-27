@@ -311,7 +311,7 @@ def create_model(args, data_shape, regularization_fns):
         model = layers.SequentialFlow(chain)
     return model
 
-
+ 
 if __name__ == "__main__":
     print(torch.cuda.is_available())
     # get deivce
