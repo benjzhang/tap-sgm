@@ -142,10 +142,14 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 ## Pushforward samples
 
 # %%
-loader = torch.utils.data.DataLoader(dataset,60000)
+loader = torch.utils.data.DataLoader(dataset,10)
 blah = enumerate(loader)
 a, (blah,b) = next(blah)
 
-pushforward_z = model(blah,reverse = False).view(-1,*data_shape)
+pushforward_z = torch.zeros(60000,1,28,28)
+
+for ii in range(60):
+    blah_sampled = blah[(ii*1000):((ii+1)*1000),:,:,:]
+    pushforward_z[(ii*1000):((ii+1)*1000),:,:,:] = model(blah_sampled,reverse = False).view(-1,*data_shape)
 
 torch.save(pushforward_z,'pushforward_samples')
