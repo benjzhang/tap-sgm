@@ -79,7 +79,7 @@ def calc_loss(score_network: torch.nn.Module, x: torch.Tensor,Tmin,Tmax,eps) -> 
 # %%
 ## training
 scorenet.train()
-opt = torch.optim.Adam(scorenet.parameters(),lr = 0.01)
+opt = torch.optim.Adam(scorenet.parameters(),lr = 0.05)
 
 epochs = 10000
 for step in range(epochs):
@@ -95,4 +95,4 @@ for step in range(epochs):
     print(loss)
 
 
-torch.save(scorenet,'mnist_scorenet_tapsgm_ffjord_T2_largerlr')
+torch.save(scorenet,'mnist_scorenet_tapsgm_ffjord_T2_lr05')
