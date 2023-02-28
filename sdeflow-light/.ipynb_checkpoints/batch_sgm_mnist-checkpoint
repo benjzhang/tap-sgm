@@ -1,0 +1,15 @@
+#!/bin/bash
+#SBATCH -c 4  # Number of Cores per Task
+#SBATCH --mem=8192  # Requested Memory
+#SBATCH -p gpu-long  # Partition
+#SBATCH -G 1  # Number of GPUs
+#SBATCH -t 168:00:00  # Job time limit
+#SBATCH -o slurm-mnistsgm.out  # %j = job ID
+
+source /modules/apps/miniconda/22.11.1-1/etc/profile.d/conda.sh
+conda activate tapsgm_gpu
+
+
+python train_img.py  --saveroot=experiments/mnist_T2 --expname=mnistsgm_const \
+    --dataset=mnist --print_every=2000 --sample_every=2000 --checkpoint_every=2000 --num_steps=1000 \
+    --T0=2 --batch_size=128 --lr=0.0001 --num_iterations=100000 --real=True --debias=False
