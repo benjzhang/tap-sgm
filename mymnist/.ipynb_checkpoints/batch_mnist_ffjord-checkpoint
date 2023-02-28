@@ -1,0 +1,13 @@
+#!/bin/bash
+#SBATCH -c 4  # Number of Cores per Task
+#SBATCH --mem=8192  # Requested Memory
+#SBATCH -p gpu-long  # Partition
+#SBATCH -G 1  # Number of GPUs
+#SBATCH -t 168:00:00  # Job time limit
+#SBATCH -o slurm-ffjord-mnist.out  # %j = job ID
+
+
+
+source /modules/apps/miniconda/22.11.1-1/etc/profile.d/conda.sh
+conda activate tapsgm_gpu
+python mnist_tapsgm.py
