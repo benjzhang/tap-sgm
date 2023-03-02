@@ -90,6 +90,7 @@ def calc_loss(score_network: torch.nn.Module, x: torch.Tensor,Tmin,Tmax,eps) -> 
 ## training
 
 loaded = torch.load('pushforward_samples')
+loaded = loaded.to(device)
 
 scorenet.train()
 opt = torch.optim.Adam(scorenet.parameters(),lr = 0.001)
