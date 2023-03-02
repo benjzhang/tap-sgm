@@ -48,7 +48,7 @@ def calc_loss(score_network: torch.nn.Module, x: torch.Tensor,Tmin,Tmax,eps) -> 
     # x: (batch_size, nch) is the training data
     
     # sample the time
-    t = torch.rand([x.size(0) ]) * (Tmax-Tmin+eps) #+ [1 for _ in range(x.ndim - 1)]).to(x) * (Tmax-Tmin+eps)
+    t = torch.rand([x.size(0) ]).to(x) * (Tmax-Tmin+eps) #+ [1 for _ in range(x.ndim - 1)]).to(x) * (Tmax-Tmin+eps)
 
     # calculate the terms for the posterior log distribution
 
