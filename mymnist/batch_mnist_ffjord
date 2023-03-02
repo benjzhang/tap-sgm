@@ -10,4 +10,4 @@
 
 source /modules/apps/miniconda/22.11.1-1/etc/profile.d/conda.sh
 conda activate tapsgm_gpu
-python mnist_tapsgm.py
+python mnist_tapsgm_relu.py
