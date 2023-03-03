@@ -19,8 +19,8 @@ inputchannels = 1
 inputheight = 28
 dimx = inputchannels * inputheight ** 2
 
-depth = 2
-hidden_units = dimx * 2 
+depth = 1
+hidden_units = 16
 
 
 
@@ -110,4 +110,4 @@ for step in range(epochs):
         print(loss,step)
 
 scorenet.eval()
-torch.save(scorenet,'mnist_scorenet_tapsgm_ffjord_ReLU_T2_lr001_iter100k_strongprior')
+torch.save(scorenet,'mnist_scorenet_tapsgm_ffjord_ReLU_T2_lr001_iter100k_strongprior_shallow')
