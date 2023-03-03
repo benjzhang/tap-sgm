@@ -20,7 +20,7 @@ inputheight = 28
 dimx = inputchannels * inputheight ** 2
 
 depth = 1
-hidden_units = 16
+hidden_units = 128
 
 
 
