@@ -99,7 +99,7 @@ epochs = 100000
 for step in range(epochs):
 
     opt.zero_grad()
-    randind = torch.randint(0,59999,(64,))
+    randind = torch.randint(0,59999,(128,))
     data = torch.tensor(loaded[randind,:,:,:])
     data = data.reshape(data.shape[0],-1).to(device)
     # training step

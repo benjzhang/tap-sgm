@@ -89,10 +89,10 @@ for step in range(epochs):
     data = torch.tensor(loaded[randind,:,:,:])
 
     # training step
-    loss = calc_loss(scorenet, data,0,2,1e-4)
+    loss = calc_loss(scorenet, data,0,5,1e-4)
     loss.backward()
     opt.step()
     print(loss)
 
 scorenet.eval()
-torch.save(scorenet,'mnist_scorenet_tapsgm_ffjord_T2_lr01_iter100k_strongprior')
+torch.save(scorenet,'mnist_scorenet_tapsgm_ffjord_T5_lr001_iter100k_strongprior')
