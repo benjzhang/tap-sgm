@@ -79,7 +79,7 @@ def calc_loss(score_network: torch.nn.Module, x: torch.Tensor,Tmin,Tmax,eps) -> 
 # %%
 ## training
 scorenet.train()
-opt = torch.optim.Adam(scorenet.parameters(),lr = 0.005)
+opt = torch.optim.Adam(scorenet.parameters(),lr = 0.001)
 
 epochs = 100000
 for step in range(epochs):
