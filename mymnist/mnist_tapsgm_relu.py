@@ -93,13 +93,13 @@ loaded = torch.load('pushforward_samples')
 loaded = loaded.to(device)
 
 scorenet.train()
-opt = torch.optim.Adam(scorenet.parameters(),lr = 0.001)
+opt = torch.optim.Adam(scorenet.parameters(),lr = 0.0005)
 
 epochs = 100000
 for step in range(epochs):
 
     opt.zero_grad()
-    randind = torch.randint(0,59999,(128,))
+    randind = torch.randint(0,59999,(256,))
     data = torch.tensor(loaded[randind,:,:,:])
     data = data.reshape(data.shape[0],-1).to(device)
     # training step
@@ -110,4 +110,4 @@ for step in range(epochs):
         print(loss,step)
 
 scorenet.eval()
-torch.save(scorenet,'mnist_scorenet_tapsgm_ffjord_ReLU_T5_lr001_iter100k_strongprior_shallow')
+torch.save(scorenet,'mnist_scorenet_tapsgm_ffjord_ReLU_T5_lr0005_iter100k_strongprior_shallow')

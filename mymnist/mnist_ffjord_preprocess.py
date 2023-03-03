@@ -122,7 +122,7 @@ inputheight = 28
 # %%
 ## Load preconditioning map
 
-checkpoint = torch.load('ffjord_mnist_bad_checkpt.pth',map_location = torch.device('cpu'))
+checkpoint = torch.load('ffjord_mnist_better_checkpt.pth',map_location = torch.device('cuda:0'))
 preconditionerargs = checkpoint['args']
 
 data_shape = (inputchannels, inputheight, inputheight)
@@ -151,6 +151,6 @@ pushforward_z = torch.zeros(60000,1,28,28)
 for ii in range(60):
     blah_sampled = blah[(ii*1000):((ii+1)*1000),:,:,:]
     pushforward_z[(ii*1000):((ii+1)*1000),:,:,:] = model(blah_sampled,reverse = False).view(-1,*data_shape)
-    torch.save(pushforward_z,'pushforward_samples')
+    torch.save(pushforward_z,'pushforward_samples_new')
 
 # torch.save(pushforward_z,'pushforward_samples')
