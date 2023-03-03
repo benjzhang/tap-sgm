@@ -93,7 +93,7 @@ loaded = torch.load('pushforward_samples')
 loaded = loaded.to(device)
 
 scorenet.train()
-opt = torch.optim.Adam(scorenet.parameters(),lr = 0.0005)
+opt = torch.optim.Adam(scorenet.parameters(),lr = 0.001)
 
 epochs = 100000
 for step in range(epochs):
