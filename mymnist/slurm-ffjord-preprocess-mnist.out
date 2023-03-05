@@ -1,2 +1,3 @@
 /work/bjzhang_umass_edu/generative_tmula/mymnist/lib/layers/odefunc.py:288: UserWarning: To copy construct from a tensor, it is recommended to use sourceTensor.clone().detach() or sourceTensor.clone().detach().requires_grad_(True), rather than torch.tensor(sourceTensor).
   t = torch.tensor(t).type_as(y)
+True
