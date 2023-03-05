@@ -98,12 +98,12 @@ opt = torch.optim.Adam(scorenet.parameters(),lr = 0.0001)
 epochs = 100000
 for step in range(epochs):
 
-    opt.zero_grad()
     randind = torch.randint(0,59999,(256,))
     data = torch.tensor(loaded[randind,:,:,:])
     data = data.reshape(data.shape[0],-1).to(device)
     # training step
     loss = calc_loss(scorenet, data,0,5,1e-4)
+    opt.zero_grad()
     loss.backward()
     opt.step()
     if not step%100:

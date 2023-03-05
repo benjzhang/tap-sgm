@@ -84,15 +84,21 @@ opt = torch.optim.Adam(scorenet.parameters(),lr = 0.01)
 epochs = 100000
 for step in range(epochs):
 
-    opt.zero_grad()
-    randind = torch.randint(0,59999,(64,))
-    data = torch.tensor(loaded[randind,:,:,:])
+    randind1 = torch.randint(0,59999,(256,))
+    randind2 = torch.randint(0,59999,(256,))
 
+    data1 = torch.tensor(loaded[randind1,:,:,:])
+    data1 = data1.reshape(data1.shape[0],-1).to(device)
+
+    data1 = torch.tensor(loaded[randind1,:,:,:])
+    data2 = data1.reshape(data2.shape[0],-1).to(device)
     # training step
-    loss = calc_loss(scorenet, data,0,5,1e-4)
+    loss = calc_loss(scorenet, data1,1,5,1e-4) + calc_loss(scorenet,data2,0,1,1e-4)
+
+    opt.zero_grad()
     loss.backward()
     opt.step()
     print(loss)
 
 scorenet.eval()
-torch.save(scorenet,'mnist_scorenet_tapsgm_ffjord_T5_lr01_iter100k')
+torch.save(scorenet,'mnist_scorenet_tapsgm_ffjord_T5_lr01_iter100k_split')
