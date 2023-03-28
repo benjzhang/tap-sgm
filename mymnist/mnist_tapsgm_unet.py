@@ -85,13 +85,11 @@ epochs = 100000
 for step in range(epochs):
 
     randind1 = torch.randint(0,59999,(128,))
-    randind2 = torch.randint(0,59999,(128,))
 
     data1 = torch.tensor(loaded[randind1,:,:,:])
-    data2 = torch.tensor(loaded[randind2,:,:,:])
     
     # training step
-    loss = calc_loss(scorenet, data1,1,5,1e-4) + calc_loss(scorenet,data2,0,1,1e-4)
+    loss = calc_loss(scorenet, data1,0,5,1e-4)# + calc_loss(scorenet,data2,0,1,1e-4)
 
     opt.zero_grad()
     loss.backward()

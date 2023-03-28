@@ -22,8 +22,8 @@ parser.add_argument('--niters',type = int, default = 100001)
 parser.add_argument('--batch_size', type = int,default = 256)
 parser.add_argument('--lr',type = float, default = 1e-3) 
 parser.add_argument('--finalT',type = float, default = 5)
-parser.add_argument('--dt',type = float,help = 'integrator step size', default = 0.01)
-parser.add_argument('--save',type = str,default = 'experiments/simple_sgm/')
+parser.add_argument('--dt',type = float,help = 'integrator step size', default = 0.1)
+parser.add_argument('--save',type = str,default = 'experiments/simple_sgm_dt01_nolm/')
 
 # %% [markdown]
 # Basic parameters
@@ -168,7 +168,22 @@ def reverse_sde(score, init,T,lr= args.dt):
         init = init + torch.randn_like(init) * np.sqrt(current_lr)
     return init
 
+def reverse_sde_lm(score, init,T,lr = args.dt):
+    step = int(T/lr)
+    lastnoise = torch.randn_like(init)
+    for i in range(step,-1,-1):
+        current_lr = lr
+        evalpoint = torch.cat(((torch.tensor(lr*i)).repeat(init.shape[0],1),init),1)
+        init = init + current_lr  * (init/2 + score(evalpoint).detach() )
 
+        currentnoise = torch.randn_like(init)
+
+        init = init + (currentnoise + lastnoise)/2 * np.sqrt(current_lr)
+
+        lastnoise = currentnoise
+
+
+    return init
 
 # The following is the deterministic ODE flow that can also sample from the target distribution
 
