@@ -3,7 +3,7 @@
 #SBATCH --mem=8192  # Requested Memory
 #SBATCH -p cpu  # Partition
 #SBATCH -t 24:00:00  # Job time limit
-#SBATCH -o slurm-simple-sgm-dt01.out  # %j = job ID
+#SBATCH -o slurm-simple-sgm-lm.out  # %j = job ID
 
 module load miniconda
 conda activate generativetmula
