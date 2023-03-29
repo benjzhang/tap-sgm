@@ -1,0 +1,33 @@
+#!/bin/bash
+#SBATCH -c 4  # Number of Cores per Task
+#SBATCH --mem=8192  # Requested Memory
+#SBATCH -p cpu  # Partition
+#SBATCH -t 24:00:00  # Job time limit
+#SBATCH -o slurm-simple-sgm-lm.out  # %j = job ID
+
+module load miniconda
+conda activate generativetmula
+
+python sgm_simple.py --data moons --finalT 3
+python sgm_simple.py --data 8gaussians --finalT 5
+python sgm_simple.py --data checkerboard --finalT 3
+python sgm_simple.py --data pinwheel --finalT 1
+python sgm_simple.py --data 2spirals --finalT 2
+
+python sgm_simple.py --data moons --depth 1 --finalT 3
+python sgm_simple.py --data 8gaussians --depth 1 --finalT 5
+python sgm_simple.py --data checkerboard --depth 1 --finalT 3
+python sgm_simple.py --data pinwheel --depth 1 --finalT 1
+python sgm_simple.py --data 2spirals --depth 1 --finalT 2
+
+python sgm_simple.py --data moons --depth 3 --finalT 3
+python sgm_simple.py --data 8gaussians --depth 3 --finalT 5
+python sgm_simple.py --data checkerboard --depth 3 --finalT 3
+python sgm_simple.py --data pinwheel --depth 3 --finalT 1
+python sgm_simple.py --data 2spirals --depth 3 --finalT 2
+
+python sgm_simple.py --data moons --depth 5 --finalT 3
+python sgm_simple.py --data 8gaussians --depth 5 --finalT 5
+python sgm_simple.py --data checkerboard --depth 5 --finalT 3
+python sgm_simple.py --data pinwheel --depth 5 --finalT 1
+python sgm_simple.py --data 2spirals --depth 5 --finalT 2

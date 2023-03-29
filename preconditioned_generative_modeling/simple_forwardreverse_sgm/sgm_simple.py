@@ -22,8 +22,8 @@ parser.add_argument('--niters',type = int, default = 100001)
 parser.add_argument('--batch_size', type = int,default = 256)
 parser.add_argument('--lr',type = float, default = 1e-3) 
 parser.add_argument('--finalT',type = float, default = 5)
-parser.add_argument('--dt',type = float,help = 'integrator step size', default = 0.01)
-parser.add_argument('--save',type = str,default = 'experiments/simple_sgm_dt001_lm/')
+parser.add_argument('--dt',type = float,help = 'integrator step size', default = 0.005)
+parser.add_argument('--save',type = str,default = 'experiments/simple_sgm_dt005_lm/')
 
 # %% [markdown]
 # Basic parameters
