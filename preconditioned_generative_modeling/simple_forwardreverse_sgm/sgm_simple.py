@@ -22,8 +22,8 @@ parser.add_argument('--niters',type = int, default = 100001)
 parser.add_argument('--batch_size', type = int,default = 256)
 parser.add_argument('--lr',type = float, default = 1e-3) 
 parser.add_argument('--finalT',type = float, default = 5)
-parser.add_argument('--dt',type = float,help = 'integrator step size', default = 0.05)
-parser.add_argument('--save',type = str,default = 'experiments/simple_sgm_dt005_lm/')
+parser.add_argument('--dt',type = float,help = 'integrator step size', default = 0.01)
+parser.add_argument('--save',type = str,default = 'experiments/simple_sgm_dt001_lm/')
 
 # %% [markdown]
 # Basic parameters
@@ -201,13 +201,13 @@ def reverse_ode_flow(score,init,T,lr = args.dt):
 # %%
 # Denoising the normal distribution 
 samples_lang = torch.randn(10000, 2) 
-samples_lang = reverse_sde(scorenet, samples_lang,torch.tensor(T)).detach().numpy()
+samples_lang = reverse_sde_lm(scorenet, samples_lang,torch.tensor(T)).detach().numpy()
 
 
 # Denoising samples from the training data
 samples = torch.tensor(toy_data.inf_train_gen(dataset, batch_size = 10000))
 samples_lang_noisedtraining = samples * torch.exp(-0.5 * torch.tensor(T)) + torch.sqrt(1-torch.exp(-torch.tensor(T))) * torch.randn_like(samples)
-samples_lang_noisedtraining =reverse_sde(scorenet, samples_lang_noisedtraining.to(dtype=torch.float32),torch.tensor(T)).detach().numpy()
+samples_lang_noisedtraining =reverse_sde_lm(scorenet, samples_lang_noisedtraining.to(dtype=torch.float32),torch.tensor(T)).detach().numpy()
 
 # Deterministically evolving the normal distribution 
 samples_lang_deterministic = torch.randn(10000,2)
